@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "serverbackup",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "name": "ServerBackup",
   "description": "Backs up the Minecraft world on server stop",
   "authors": ["ExcuseMeImJack"],

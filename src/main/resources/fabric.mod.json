@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "serverbackup",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "name": "ServerBackup",
-  "description": "Backs up the Minecraft world on server stop",
+  "description": "Backups up your server with a single command! It's also very easy to restore player and world data!",
   "authors": ["ExcuseMeImJack"],
   "contact": {},
   "license": "MIT",

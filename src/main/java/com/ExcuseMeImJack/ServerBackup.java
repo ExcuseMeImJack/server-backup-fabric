@@ -14,7 +14,9 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.text.Style;
 import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 import net.minecraft.util.WorldSavePath;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -204,14 +206,17 @@ public class ServerBackup implements ModInitializer {
 
 	private int runBackupCommand(CommandContext<ServerCommandSource> context) {
 		MinecraftServer server = context.getSource().getServer();
-		context.getSource().sendMessage(Text.of("Backing up world..."));
+		context.getSource()
+				.sendMessage(Text.literal("Backing up world...").setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
 
 		try {
 			backupWorld(server);
-			context.getSource().sendMessage(Text.of("World backup completed successfully."));
+			context.getSource().sendMessage(
+					Text.literal("World backup completed successfully.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
 		} catch (IOException e) {
 			LOGGER.error("Backup failed", e);
-			context.getSource().sendError(Text.of("Backup failed: " + e.getMessage()));
+			context.getSource()
+					.sendError(Text.literal("Backup failed: " + e.getMessage()).setStyle(Style.EMPTY.withColor(Formatting.RED)));
 		}
 		return 1;
 	}
@@ -219,7 +224,8 @@ public class ServerBackup implements ModInitializer {
 	private int setBackupDelay(CommandContext<ServerCommandSource> context) {
 		int delay = IntegerArgumentType.getInteger(context, "time");
 		this.backupDelayMinutes = delay;
-		context.getSource().sendMessage(Text.of("Automatic backup delay set to " + delay + " minutes."));
+		context.getSource().sendMessage(Text.literal("Automatic backup delay set to " + delay + " minutes.")
+				.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
 		return 1;
 	}
 
@@ -230,7 +236,8 @@ public class ServerBackup implements ModInitializer {
 		// Check if the backup exists
 		Path backupPath = backupHistory.get(saveId);
 		if (backupPath == null) {
-			context.getSource().sendError(Text.of("No backup found with ID " + saveId));
+			context.getSource().sendError(
+					Text.literal("No backup found with ID " + saveId).setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
 			return 0;
 		}
 
@@ -238,14 +245,18 @@ public class ServerBackup implements ModInitializer {
 		String timestamp = backupPath.getFileName().toString().split("_")[0];
 		String formattedDate = formatTimestamp(timestamp);
 		context.getSource()
-				.sendMessage(Text.of("Restoring world from backup " + saveId + " (Timestamp: " + formattedDate + ")"));
+				.sendMessage(Text.literal("Restoring world from backup " + saveId + " (Timestamp: " + formattedDate + ")")
+						.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
 
 		// Step 1: Kick all players
 		for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
 			player.sendMessage(
-					Text.of("The world is being restored to the backup from " + formattedDate + ". You will be disconnected."),
-					false);
-			player.networkHandler.disconnect(Text.of("The world is being restored. Please reconnect shortly."));
+					Text.literal(
+							"The world is being restored to the backup from " + formattedDate + ". You will be disconnected.")
+							.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)),
+							false);
+			player.networkHandler.disconnect(Text.literal("The world is being restored. Please reconnect shortly.")
+					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
 		}
 
 		// Optional: Wait for players to disconnect (not the best solution but works for
@@ -259,10 +270,12 @@ public class ServerBackup implements ModInitializer {
 		// Step 2: Restore the world from the backup
 		try {
 			restoreBackup(server, backupPath);
-			context.getSource().sendMessage(Text.of("World restored successfully."));
+			context.getSource()
+					.sendMessage(Text.literal("World restored successfully.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
 		} catch (IOException e) {
 			LOGGER.error("Failed to restore world", e);
-			context.getSource().sendError(Text.of("Failed to restore world: " + e.getMessage()));
+			context.getSource().sendError(
+					Text.literal("Failed to restore world: " + e.getMessage()).setStyle(Style.EMPTY.withColor(Formatting.RED)));
 			return 0;
 		}
 
@@ -270,50 +283,55 @@ public class ServerBackup implements ModInitializer {
 		restartServer(server);
 
 		return 1;
-}
-
-private void restartServer(MinecraftServer server) {
-	// This method will trigger the server to restart after the world is restored
-	LOGGER.info("Restarting the server...");
-
-	// Send a restart message to all players
-	server.getPlayerManager().broadcast(Text.literal("Server is restarting..."), false);
-
-	// Stop the server, which will trigger a restart on most environments
-	server.stop(false);
-}
-
-private int restorePlayerInventory(CommandContext<ServerCommandSource> context) {
-	String saveId = StringArgumentType.getString(context, "saveid");
-	String playerName = StringArgumentType.getString(context, "player");
-
-	Path backupPath = backupHistory.get(saveId);
-	if (backupPath == null) {
-		context.getSource().sendError(Text.of("No backup found with ID " + saveId));
-		return 0;
 	}
 
-	context.getSource()
-			.sendMessage(Text.of("Restoring inventory for player " + playerName + " from backup " + saveId));
+	private void restartServer(MinecraftServer server) {
+		// This method will trigger the server to restart after the world is restored
+		LOGGER.info("Restarting the server...");
 
-	UUID playerUUID = getPlayerUUID(playerName, context.getSource());
-	if (playerUUID == null) {
-		context.getSource().sendError(Text.of("Player not found: " + playerName));
-		return 0;
+		// Send a restart message to all players
+		server.getPlayerManager().broadcast(Text.literal("Server is restarting..."), false);
+
+		// Stop the server, which will trigger a restart on most environments
+		server.stop(false);
 	}
 
-	Path playerFile = backupPath.resolve("playerdata").resolve(playerUUID.toString() + ".dat");
-	if (!Files.exists(playerFile)) {
-		context.getSource().sendError(Text.of("No inventory data found for player " + playerName));
-		return 0;
-	}
+	private int restorePlayerInventory(CommandContext<ServerCommandSource> context) {
+		String saveId = StringArgumentType.getString(context, "saveid");
+		String playerName = StringArgumentType.getString(context, "player");
+
+		Path backupPath = backupHistory.get(saveId);
+		if (backupPath == null) {
+			context.getSource().sendError(
+					Text.literal("No backup found with ID " + saveId).setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
+			return 0;
+		}
+
+		context.getSource()
+				.sendMessage(Text.literal("Restoring inventory for player " + playerName + " from backup " + saveId)
+						.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
+
+		UUID playerUUID = getPlayerUUID(playerName, context.getSource());
+		if (playerUUID == null) {
+			context.getSource()
+					.sendError(Text.literal("Player not found: " + playerName).setStyle(Style.EMPTY.withColor(Formatting.RED)));
+			return 0;
+		}
+
+		Path playerFile = backupPath.resolve("playerdata").resolve(playerUUID.toString() + ".dat");
+		if (!Files.exists(playerFile)) {
+			context.getSource().sendError(Text.literal("No inventory data found for player " + playerName)
+					.setStyle(Style.EMPTY.withColor(Formatting.RED)));
+			return 0;
+		}
 
 		try {
 			MinecraftServer server = context.getSource().getServer();
 			ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerUUID);
 
 			if (player == null) {
-				context.getSource().sendError(Text.of("Player must be online to restore inventory."));
+				context.getSource().sendError(Text.literal("Player must be online to restore inventory.")
+						.setStyle(Style.EMPTY.withColor(Formatting.RED)));
 				return 0;
 			}
 
@@ -332,13 +350,16 @@ private int restorePlayerInventory(CommandContext<ServerCommandSource> context) 
 
 			syncPlayerData(player);
 
-			player.sendMessage(Text.of("Your inventory has been restored."), false);
-			context.getSource().sendMessage(Text.of("Player inventory restored successfully."));
+			player.sendMessage(
+					Text.literal("Your inventory has been restored.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)), false);
+			context.getSource().sendMessage(
+					Text.literal("Player inventory restored successfully.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
 			return 1;
 
 		} catch (IOException e) {
 			LOGGER.error("Failed to restore player inventory", e);
-			context.getSource().sendError(Text.of("Failed to restore player inventory: " + e.getMessage()));
+			context.getSource().sendError(Text.literal("Failed to restore player inventory: " + e.getMessage())
+					.setStyle(Style.EMPTY.withColor(Formatting.RED)));
 			return 0;
 		}
 	}
@@ -438,9 +459,10 @@ private int restorePlayerInventory(CommandContext<ServerCommandSource> context) 
 		// Check if backup folder exists and is a valid directory
 		if (!backupFolder.exists() || !backupFolder.isDirectory()) {
 			LOGGER.error("Backup folder does not exist or is not a directory.");
-			context.getSource().sendMessage(Text.of("Backup folder is missing or invalid."));
-			return 1;
-		}
+				context.getSource().sendMessage(Text.literal("Backup folder is missing or invalid.")
+						.setStyle(Style.EMPTY.withColor(Formatting.RED)));
+				return 1;
+			}
 
 		// Read the backup history file
 		try (FileReader reader = new FileReader(backupHistoryFile)) {
@@ -472,25 +494,25 @@ private int restorePlayerInventory(CommandContext<ServerCommandSource> context) 
 		File[] backupDirs = backupFolder.listFiles((dir, name) -> new File(dir, name).isDirectory());
 		if (backupDirs != null) {
 			for (File backupDir : backupDirs) {
-				String dirName = backupDir.getName();
+					boolean alreadyExists = backupHistory.values().stream()
+							.anyMatch(existingPath -> existingPath.getFileName().toString().equals(backupDir.getName()));
 
-				// Check if the backup directory is already in the history, avoid duplicates
-				boolean alreadyExists = backupHistory.values().stream()
-						.anyMatch(existingPath -> existingPath.getFileName().toString().equals(backupDir.getName()));
-
-				if (!alreadyExists) {
-					LOGGER.info("Adding new backup directory to history: " + backupDir.getPath());
-					String newId = UUID.randomUUID().toString(); // Generate a new ID for the backup
-					backupHistory.put(newId, backupDir.toPath());
-				}
+						if (!alreadyExists) {
+							LOGGER.info("Adding new backup directory to history: " + backupDir.getPath());
+								String newId = UUID.randomUUID().toString();
+								backupHistory.put(newId, backupDir.toPath());
+							}
+						}
+					} else {
+						LOGGER.error("Error accessing the backup folder.");
+				context.getSource().sendMessage(Text.literal("Error accessing the backup folder.")
+						.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
 			}
-		} else {
-			LOGGER.error("Error accessing the backup folder.");
-		}
 
 		// Sort and display the backup list
 		if (backupHistory.isEmpty()) {
-			context.getSource().sendMessage(Text.of("No backups found."));
+			context.getSource().sendMessage(Text.literal("No backups found.")
+					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
 			return 1;
 		}
 
@@ -514,16 +536,18 @@ private int restorePlayerInventory(CommandContext<ServerCommandSource> context) 
 			String saveId = entry.getKey();
 			Path backupPath = entry.getValue();
 
-			String timestamp = backupPath.getFileName().toString().split("_")[0] + '_'
-					+ backupPath.getFileName().toString().split("_")[1];
-			String formattedDate = formatTimestamp(timestamp);
+				String timestamp = backupPath.getFileName().toString().split("_")[0] + '_'
+						+ backupPath.getFileName().toString().split("_")[1];
+				String formattedDate = formatTimestamp(timestamp);
 
-			listBuilder.append("Backup ID: ").append(saveId)
-					.append(" | Timestamp: ").append(formattedDate)
-					.append("\n");
-		}
+				listBuilder.append("Backup ID: ")
+						.append(Text.literal(saveId).setStyle(Style.EMPTY.withColor(Formatting.AQUA)))
+						.append(" | Timestamp: ")
+						.append(Text.literal(formattedDate).setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
+			}
 
-		context.getSource().sendMessage(Text.of(listBuilder.toString()));
+		context.getSource()
+				.sendMessage(Text.literal(listBuilder.toString()).setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
 		return 1;
 	}
 

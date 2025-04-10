@@ -64,7 +64,6 @@ public class ServerBackup implements ModInitializer {
 			registerListBackupsCommand(dispatcher);
 		});
 
-
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
 			ticksSinceLastBackup++;
 			if (ticksSinceLastBackup >= TICKS_PER_MINUTE * backupDelayMinutes) {
@@ -309,9 +308,9 @@ private int restorePlayerInventory(CommandContext<ServerCommandSource> context) 
 		return 0;
 	}
 
-	try {
-		MinecraftServer server = context.getSource().getServer();
-		ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerUUID);
+		try {
+			MinecraftServer server = context.getSource().getServer();
+			ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerUUID);
 
 			if (player == null) {
 				context.getSource().sendError(Text.of("Player must be online to restore inventory."));
@@ -520,7 +519,8 @@ private int restorePlayerInventory(CommandContext<ServerCommandSource> context) 
 			String formattedDate = formatTimestamp(timestamp);
 
 			listBuilder.append("Backup ID: ").append(saveId)
-					.append(" | Timestamp: ").append(formattedDate);
+					.append(" | Timestamp: ").append(formattedDate)
+					.append("\n");
 		}
 
 		context.getSource().sendMessage(Text.of(listBuilder.toString()));

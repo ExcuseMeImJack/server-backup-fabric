@@ -45,19 +45,17 @@ public class ServerBackup implements ModInitializer {
 	public static final String MOD_ID = "ServerBackup";
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
-	private static final int TICKS_PER_MINUTE = 1200; // 20 ticks per second * 60 seconds
+	private static final int TICKS_PER_MINUTE = 1200;
 	private int ticksSinceLastBackup = 0;
-	private int backupDelayMinutes = 10; // Default automatic backup interval in minutes
-	private static final String BACKUP_HISTORY_FILE = "backup_history.json"; // The file where history will be stored
-	private Map<String, Path> backupHistory = new HashMap<>(); // To store backups and their IDs
+	private int backupDelayMinutes = 10;
+	private static final String BACKUP_HISTORY_FILE = "backup_history.json";
+	private Map<String, Path> backupHistory = new HashMap<>();
 
 	@Override
 	public void onInitialize() {
 
-		// Load backup history when the server starts
 		loadBackupHistory();
 
-		// Register the backup commands
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
 			registerBackupCommand(dispatcher);
 			registerAutoDelayCommand(dispatcher);
@@ -66,7 +64,7 @@ public class ServerBackup implements ModInitializer {
 			registerListBackupsCommand(dispatcher);
 		});
 
-		// Register the periodic backup task
+
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
 			ticksSinceLastBackup++;
 			if (ticksSinceLastBackup >= TICKS_PER_MINUTE * backupDelayMinutes) {
@@ -76,17 +74,15 @@ public class ServerBackup implements ModInitializer {
 				} catch (IOException e) {
 					LOGGER.error("Automated backup failed", e);
 				}
-				ticksSinceLastBackup = 0; // Reset the backup counter
+				ticksSinceLastBackup = 0;
 			}
 		});
 	}
 
-	// Save the backup history to a file (JSON format)
 	private void saveBackupHistory() {
 		Gson gson = new Gson();
 		Map<String, String> backupHistoryAsStrings = new HashMap<>();
 
-		// Convert each Path to a String
 		for (Map.Entry<String, Path> entry : backupHistory.entrySet()) {
 			backupHistoryAsStrings.put(entry.getKey(), entry.getValue().toString());
 		}
@@ -101,8 +97,8 @@ public class ServerBackup implements ModInitializer {
 	private void loadBackupHistory() {
 		Gson gson = new Gson();
 		File backupHistoryFile = new File(BACKUP_HISTORY_FILE);
+		File backupFolder = new File("server_backups");
 
-		// Check if the file exists, if not, create a new one
 		if (!backupHistoryFile.exists()) {
 			try {
 				if (backupHistoryFile.createNewFile()) {
@@ -115,36 +111,56 @@ public class ServerBackup implements ModInitializer {
 			}
 		}
 
+		if (!backupFolder.exists() || !backupFolder.isDirectory()) {
+			LOGGER.error("Backup folder does not exist or is not a directory.");
+			return;
+		}
+
 		try (FileReader reader = new FileReader(backupHistoryFile)) {
-			// Check if the file is empty before proceeding
 			if (reader.ready()) {
 				Type type = new TypeToken<Map<String, String>>() {
 				}.getType();
 				Map<String, String> backupHistoryAsStrings = gson.fromJson(reader, type);
-
-				// Convert each string back to a Path
 				backupHistory.clear();
 				for (Map.Entry<String, String> entry : backupHistoryAsStrings.entrySet()) {
-					backupHistory.put(entry.getKey(), Paths.get(entry.getValue()));
+					Path backupPath = Paths.get(entry.getValue());
+					if (Files.exists(backupPath) && Files.isDirectory(backupPath)) {
+						backupHistory.put(entry.getKey(), backupPath); // Keep valid backups
+					} else {
+						LOGGER.info("Backup directory no longer exists: " + backupPath);
+					}
 				}
 			} else {
 				LOGGER.info("Backup history file is empty. Initializing with an empty history.");
-				backupHistory.clear(); // Handle the empty file case
+				backupHistory.clear();
 			}
 		} catch (JsonSyntaxException e) {
 			LOGGER.error("Invalid JSON format in backup history file. Reinitializing with an empty history.", e);
-			backupHistory.clear(); // Handle malformed JSON
-			resetBackupHistoryFile(); // Optionally reset the file with valid JSON
+			backupHistory.clear();
+			resetBackupHistoryFile();
 		} catch (IOException e) {
 			LOGGER.error("Error reading the backup history file.", e);
-			backupHistory.clear(); // Handle general I/O errors
+			backupHistory.clear();
+		}
+
+		File[] backupDirs = backupFolder.listFiles((dir, name) -> new File(dir, name).isDirectory());
+		if (backupDirs != null) {
+			for (File backupDir : backupDirs) {
+				String dirName = backupDir.getName();
+				Path backupPath = backupDir.toPath();
+				if (!backupHistory.containsKey(dirName)) {
+					LOGGER.info("Adding new backup directory to history: " + backupPath);
+					backupHistory.put(dirName, backupPath);
+				}
+			}
+		} else {
+			LOGGER.error("Error accessing the backup folder.");
 		}
 	}
 
 	private void resetBackupHistoryFile() {
 		Gson gson = new Gson();
 		try (FileWriter writer = new FileWriter(BACKUP_HISTORY_FILE)) {
-			// Create an empty history map
 			Map<String, String> emptyHistory = new HashMap<>();
 			gson.toJson(emptyHistory, writer);
 			LOGGER.info("Backup history file has been reset with an empty history.");
@@ -191,42 +207,81 @@ public class ServerBackup implements ModInitializer {
 		MinecraftServer server = context.getSource().getServer();
 		context.getSource().sendMessage(Text.of("Backing up world..."));
 
-	try {
-		backupWorld(server);
-		context.getSource().sendMessage(Text.of("World backup completed successfully."));
-	} catch (IOException e) {
-		LOGGER.error("Backup failed", e);
-		context.getSource().sendError(Text.of("Backup failed: " + e.getMessage()));
+		try {
+			backupWorld(server);
+			context.getSource().sendMessage(Text.of("World backup completed successfully."));
+		} catch (IOException e) {
+			LOGGER.error("Backup failed", e);
+			context.getSource().sendError(Text.of("Backup failed: " + e.getMessage()));
+		}
+		return 1;
 	}
-	return 1;
+
+	private int setBackupDelay(CommandContext<ServerCommandSource> context) {
+		int delay = IntegerArgumentType.getInteger(context, "time");
+		this.backupDelayMinutes = delay;
+		context.getSource().sendMessage(Text.of("Automatic backup delay set to " + delay + " minutes."));
+		return 1;
+	}
+
+	private int restoreWorld(CommandContext<ServerCommandSource> context) {
+		String saveId = StringArgumentType.getString(context, "saveid");
+		MinecraftServer server = context.getSource().getServer();
+
+		// Check if the backup exists
+		Path backupPath = backupHistory.get(saveId);
+		if (backupPath == null) {
+			context.getSource().sendError(Text.of("No backup found with ID " + saveId));
+			return 0;
+		}
+
+		// Get the timestamp and send a message to the user
+		String timestamp = backupPath.getFileName().toString().split("_")[0];
+		String formattedDate = formatTimestamp(timestamp);
+		context.getSource()
+				.sendMessage(Text.of("Restoring world from backup " + saveId + " (Timestamp: " + formattedDate + ")"));
+
+		// Step 1: Kick all players
+		for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
+			player.sendMessage(
+					Text.of("The world is being restored to the backup from " + formattedDate + ". You will be disconnected."),
+					false);
+			player.networkHandler.disconnect(Text.of("The world is being restored. Please reconnect shortly."));
+		}
+
+		// Optional: Wait for players to disconnect (not the best solution but works for
+		// now)
+		try {
+			Thread.sleep(5000); // Wait for a few seconds to ensure players disconnect
+		} catch (InterruptedException e) {
+			LOGGER.error("Error waiting for players to disconnect", e);
+		}
+
+		// Step 2: Restore the world from the backup
+		try {
+			restoreBackup(server, backupPath);
+			context.getSource().sendMessage(Text.of("World restored successfully."));
+		} catch (IOException e) {
+			LOGGER.error("Failed to restore world", e);
+			context.getSource().sendError(Text.of("Failed to restore world: " + e.getMessage()));
+			return 0;
+		}
+
+		// Step 3: Restart the server to load the restored world
+		restartServer(server);
+
+		return 1;
 }
 
-private int setBackupDelay(CommandContext<ServerCommandSource> context) {
-	int delay = IntegerArgumentType.getInteger(context, "time");
-	this.backupDelayMinutes = delay;
-	context.getSource().sendMessage(Text.of("Automatic backup delay set to " + delay + " minutes."));
-	return 1;
-}
+private void restartServer(MinecraftServer server) {
+	// This method will trigger the server to restart after the world is restored
+	LOGGER.info("Restarting the server...");
 
-private int restoreWorld(CommandContext<ServerCommandSource> context) {
-	String saveId = StringArgumentType.getString(context, "saveid");
-	MinecraftServer server = context.getSource().getServer();
+	// Send a restart message to all players
+	server.getPlayerManager().broadcast(Text.literal("Server is restarting..."), false);
 
-	Path backupPath = backupHistory.get(saveId);
-	if (backupPath == null) {
-		context.getSource().sendError(Text.of("No backup found with ID " + saveId));
-		return 0;
-	}
-
-	context.getSource().sendMessage(Text.of("Restoring world from backup " + saveId));
-	try {
-		restoreBackup(server, backupPath);
-		context.getSource().sendMessage(Text.of("World restored successfully."));
-	} catch (IOException e) {
-		LOGGER.error("Failed to restore world", e);
-		context.getSource().sendError(Text.of("Failed to restore world: " + e.getMessage()));
-	}
-	return 1;
+	// Stop the server, which will trigger a restart on most environments
+	server.stop(false);
 }
 
 private int restorePlayerInventory(CommandContext<ServerCommandSource> context) {
@@ -258,91 +313,74 @@ private int restorePlayerInventory(CommandContext<ServerCommandSource> context) 
 		MinecraftServer server = context.getSource().getServer();
 		ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerUUID);
 
-		if (player == null) {
-			context.getSource().sendError(Text.of("Player must be online to restore inventory."));
-			return 0;
-		}
+			if (player == null) {
+				context.getSource().sendError(Text.of("Player must be online to restore inventory."));
+				return 0;
+			}
 
-		// Read NBT from backup .dat file
-		NbtCompound playerNBT;
-		try (InputStream in = Files.newInputStream(playerFile)) {
-			playerNBT = NbtIo.readCompressed(in, NbtSizeTracker.ofUnlimitedBytes());
-		}
+			NbtCompound playerNBT;
+			try (InputStream in = Files.newInputStream(playerFile)) {
+				playerNBT = NbtIo.readCompressed(in, NbtSizeTracker.ofUnlimitedBytes());
+			}
 
-			// Save current position
 			double x = player.getX();
 			double y = player.getY();
 			double z = player.getZ();
 
-			// Restore from NBT
 			player.readNbt(playerNBT);
 
-			// Re-apply original position (this keeps them in place!)
 			player.refreshPositionAndAngles(x, y, z, player.getYaw(), player.getPitch());
 
-			// Re-sync client view of health/hunger/equipment
 			syncPlayerData(player);
 
 			player.sendMessage(Text.of("Your inventory has been restored."), false);
 			context.getSource().sendMessage(Text.of("Player inventory restored successfully."));
-		return 1;
+			return 1;
 
-	} catch (IOException e) {
-		LOGGER.error("Failed to restore player inventory", e);
-		context.getSource().sendError(Text.of("Failed to restore player inventory: " + e.getMessage()));
-		return 0;
-	}
-}
-
-// Helper method to sync player data (health, food, etc.)
-private void syncPlayerData(ServerPlayerEntity player) {
-	// Sync health and hunger
-	player.networkHandler.sendPacket(new HealthUpdateS2CPacket(
-			player.getHealth(),
-			player.getHungerManager().getFoodLevel(),
-			player.getHungerManager().getSaturationLevel()));
-
-	// Sync armor and held items
-	List<Pair<EquipmentSlot, ItemStack>> equipmentList = new ArrayList<>();
-	for (EquipmentSlot slot : EquipmentSlot.values()) {
-		ItemStack stack = player.getEquippedStack(slot);
-		if (!stack.isEmpty()) {
-			equipmentList.add(new Pair<>(slot, stack));
+		} catch (IOException e) {
+			LOGGER.error("Failed to restore player inventory", e);
+			context.getSource().sendError(Text.of("Failed to restore player inventory: " + e.getMessage()));
+			return 0;
 		}
 	}
-	player.networkHandler.sendPacket(new EntityEquipmentUpdateS2CPacket(player.getId(), equipmentList));
 
-}
+	private void syncPlayerData(ServerPlayerEntity player) {
+		player.networkHandler.sendPacket(new HealthUpdateS2CPacket(
+				player.getHealth(),
+				player.getHungerManager().getFoodLevel(),
+				player.getHungerManager().getSaturationLevel()));
 
-private UUID getPlayerUUID(String playerName, ServerCommandSource source) {
-	MinecraftServer server = source.getServer(); // Get the server from the command source
-	return server.getUserCache().findByName(playerName).map(gameProfile -> gameProfile.getId()).orElse(null);
+		List<Pair<EquipmentSlot, ItemStack>> equipmentList = new ArrayList<>();
+		for (EquipmentSlot slot : EquipmentSlot.values()) {
+			ItemStack stack = player.getEquippedStack(slot);
+			if (!stack.isEmpty()) {
+				equipmentList.add(new Pair<>(slot, stack));
+			}
+		}
+		player.networkHandler.sendPacket(new EntityEquipmentUpdateS2CPacket(player.getId(), equipmentList));
+
+	}
+
+	private UUID getPlayerUUID(String playerName, ServerCommandSource source) {
+		MinecraftServer server = source.getServer();
+		return server.getUserCache().findByName(playerName).map(gameProfile -> gameProfile.getId()).orElse(null);
 	}
 
 	private void backupWorld(MinecraftServer server) throws IOException {
-		// Get the main server directory as File, then convert it to Path using
-		// toAbsolutePath()
-		Path serverDir = server.getRunDirectory().toAbsolutePath(); // Convert to Path and use toAbsolutePath()
+		Path serverDir = server.getRunDirectory().toAbsolutePath();
 
-		// Set backups directory in the main server directory
 		Path backupsDir = serverDir.resolve("server_backups");
 
-		// Ensure the backup directory exists
 		Files.createDirectories(backupsDir);
 
-		// Generate a timestamp for the backup filename
 		String timestamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
 
-		// Generate a random saveId (you could use UUID if you prefer more randomness)
 		String saveId = generateRandomSaveId();
 
-		// Combine timestamp with saveId to create a unique backup path
-		Path backupDest = backupsDir.resolve(timestamp + "_" + saveId); // Backup destination with timestamp and saveId
+		Path backupDest = backupsDir.resolve(timestamp + "_" + saveId);
 
-		// Path to the world directory
 		Path worldDir = server.getSavePath(WorldSavePath.ROOT);
 
-		// Create a temporary directory for the backup
 		Path tempBackupDir = Files.createTempDirectory("world_backup_");
 
 		LOGGER.info("Temporary backup location: " + tempBackupDir);
@@ -350,21 +388,17 @@ private UUID getPlayerUUID(String playerName, ServerCommandSource source) {
 		try {
 			LOGGER.info("World backup started.");
 
-			// Copy the world directory to the temporary backup directory
 			copyDirectory(worldDir, tempBackupDir);
 			LOGGER.info("Temporary backup completed.");
 
-			// Move the temporary backup to the final destination
 			Files.move(tempBackupDir, backupDest, StandardCopyOption.REPLACE_EXISTING);
 			LOGGER.info("Backup successfully moved to: " + backupDest);
 
-			// Store backup in history with saveId as the key
 			backupHistory.put(saveId, backupDest);
 		} catch (IOException e) {
 			LOGGER.error("Backup failed", e);
 			throw e;
 		} finally {
-			// Clean up temporary directory
 			if (Files.exists(tempBackupDir)) {
 				deleteDirectory(tempBackupDir);
 			}
@@ -373,57 +407,135 @@ private UUID getPlayerUUID(String playerName, ServerCommandSource source) {
 		LOGGER.info("World backup completed.");
 		saveBackupHistory();
 
-		// Limit the number of backups (e.g., keep only the 10 most recent backups)
 		limitBackups(backupsDir, 10);
 	}
 
 	private String generateRandomSaveId() {
-		// Generate a random 5-digit number as the save ID
 		Random rand = new Random();
-		int saveId = rand.nextInt(90000) + 10000; // Ensures it's a 5-digit number
+		int saveId = rand.nextInt(90000) + 10000;
 		return Integer.toString(saveId);
 	}
 
 	private int listBackups(CommandContext<ServerCommandSource> context) {
+		// New method for loading the backup history directly in the list function
+		Map<String, Path> backupHistory = new HashMap<>();
+		Gson gson = new Gson();
+		File backupHistoryFile = new File(BACKUP_HISTORY_FILE);
+		File backupFolder = new File("server_backups");
+
+		// Ensure backup history file exists or create it
+		if (!backupHistoryFile.exists()) {
+			try {
+				if (backupHistoryFile.createNewFile()) {
+					LOGGER.info("Backup history file created.");
+				} else {
+					LOGGER.error("Failed to create backup history file.");
+				}
+			} catch (IOException e) {
+				LOGGER.error("Error creating backup history file.", e);
+			}
+		}
+
+		// Check if backup folder exists and is a valid directory
+		if (!backupFolder.exists() || !backupFolder.isDirectory()) {
+			LOGGER.error("Backup folder does not exist or is not a directory.");
+			context.getSource().sendMessage(Text.of("Backup folder is missing or invalid."));
+			return 1;
+		}
+
+		// Read the backup history file
+		try (FileReader reader = new FileReader(backupHistoryFile)) {
+			if (reader.ready()) {
+				Type type = new TypeToken<Map<String, String>>() {
+				}.getType();
+				Map<String, String> backupHistoryAsStrings = gson.fromJson(reader, type);
+				for (Map.Entry<String, String> entry : backupHistoryAsStrings.entrySet()) {
+					Path backupPath = Paths.get(entry.getValue());
+					if (Files.exists(backupPath) && Files.isDirectory(backupPath)) {
+						backupHistory.put(entry.getKey(), backupPath); // Add valid backups to the map
+					} else {
+						LOGGER.info("Backup directory no longer exists: " + backupPath);
+					}
+				}
+			} else {
+				LOGGER.info("Backup history file is empty.");
+			}
+		} catch (JsonSyntaxException e) {
+			LOGGER.error("Invalid JSON format in backup history file. Reinitializing with an empty history.", e);
+			backupHistory.clear();
+			resetBackupHistoryFile();
+		} catch (IOException e) {
+			LOGGER.error("Error reading the backup history file.", e);
+			backupHistory.clear();
+		}
+
+		// Add any new valid directories from the backup folder to the history
+		File[] backupDirs = backupFolder.listFiles((dir, name) -> new File(dir, name).isDirectory());
+		if (backupDirs != null) {
+			for (File backupDir : backupDirs) {
+				String dirName = backupDir.getName();
+
+				// Check if the backup directory is already in the history, avoid duplicates
+				boolean alreadyExists = backupHistory.values().stream()
+						.anyMatch(existingPath -> existingPath.getFileName().toString().equals(backupDir.getName()));
+
+				if (!alreadyExists) {
+					LOGGER.info("Adding new backup directory to history: " + backupDir.getPath());
+					String newId = UUID.randomUUID().toString(); // Generate a new ID for the backup
+					backupHistory.put(newId, backupDir.toPath());
+				}
+			}
+		} else {
+			LOGGER.error("Error accessing the backup folder.");
+		}
+
+		// Sort and display the backup list
 		if (backupHistory.isEmpty()) {
 			context.getSource().sendMessage(Text.of("No backups found."));
 			return 1;
 		}
 
+		// Sort backups by timestamp (from the directory name)
+		List<Map.Entry<String, Path>> sortedBackups = new ArrayList<>(backupHistory.entrySet());
+		sortedBackups.sort((entry1, entry2) -> {
+			String timestamp1 = entry1.getValue().getFileName().toString().split("_")[0] + '_'
+					+ entry1.getValue().getFileName().toString().split("_")[1];
+			String formattedDate1 = formatTimestamp(timestamp1);
+
+			String timestamp2 = entry2.getValue().getFileName().toString().split("_")[0] + '_'
+					+ entry2.getValue().getFileName().toString().split("_")[1];
+			String formattedDate2 = formatTimestamp(timestamp2);
+
+			return formattedDate1.compareTo(formattedDate2);
+		});
+
+		// Build and send the backup list to the player
 		StringBuilder listBuilder = new StringBuilder();
-		for (Map.Entry<String, Path> entry : backupHistory.entrySet()) {
+		for (Map.Entry<String, Path> entry : sortedBackups) {
 			String saveId = entry.getKey();
 			Path backupPath = entry.getValue();
 
-			// Extract the timestamp from the backup directory name (before the saveId)
-			String[] parts = backupPath.getFileName().toString().split("_");
-			String timestamp = parts.length > 0 ? parts[0] : "Unknown timestamp";
-
-			// Format the timestamp to a human-readable date
+			String timestamp = backupPath.getFileName().toString().split("_")[0] + '_'
+					+ backupPath.getFileName().toString().split("_")[1];
 			String formattedDate = formatTimestamp(timestamp);
 
-			// Append the saveId, formatted timestamp, and the full backup path to the list
 			listBuilder.append("Backup ID: ").append(saveId)
-					.append(" | Timestamp: ").append(formattedDate)
-					.append("\n");
+					.append(" | Timestamp: ").append(formattedDate);
 		}
 
-		// Send the backup list to the user
 		context.getSource().sendMessage(Text.of(listBuilder.toString()));
-
 		return 1;
 	}
+
 
 	private void copyDirectory(Path source, Path target) throws IOException {
 		Files.walk(source)
 				.filter(path -> {
-					// Exclude "logs" and "tmp" folders, as well as the "session.lock" file
 					return !path.toString().contains("logs") &&
 							!path.toString().contains("tmp") &&
 							!path.getFileName().toString().equals("session.lock");
 				})
 				.filter(path -> {
-					// Additional checks for maximum depth and path length
 					int maxDepth = 3;
 					int maxLength = 200;
 					return source.relativize(path).getNameCount() <= maxDepth && path.toString().length() <= maxLength;
@@ -443,14 +555,12 @@ private UUID getPlayerUUID(String playerName, ServerCommandSource source) {
 	}
 
 	private void restoreBackup(MinecraftServer server, Path backupPath) throws IOException {
-		// Logic to restore the world from the backup
 		Path worldDir = server.getSavePath(WorldSavePath.ROOT);
 		deleteDirectory(worldDir);
 		copyDirectory(backupPath, worldDir);
 	}
 
 	private void limitBackups(Path backupsDir, int maxBackups) throws IOException {
-		// If there are too many backups, delete the oldest one
 		if (Files.list(backupsDir).count() > maxBackups) {
 			List<Path> backups = new ArrayList<>();
 			Files.list(backupsDir).forEach(backups::add);
@@ -479,14 +589,17 @@ private UUID getPlayerUUID(String playerName, ServerCommandSource source) {
 				});
 	}
 
-	// Format timestamp to human-readable date
 	private String formatTimestamp(String timestamp) {
 		try {
-			// Define the format of the timestamp (example: "yyyy-MM-dd_HH-mm-ss")
-			SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss");
-			Date parsedDate = dateFormat.parse(timestamp);
+			String formattedTimestamp = timestamp;
 
-			// Format the date to a more readable format
+			if (timestamp.length() <= 10) {
+				formattedTimestamp += "_00-00-00";
+			}
+
+			SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss");
+			Date parsedDate = dateFormat.parse(formattedTimestamp);
+
 			SimpleDateFormat readableDateFormat = new SimpleDateFormat("MMM dd, yyyy HH:mm:ss");
 			return readableDateFormat.format(parsedDate);
 		} catch (Exception e) {

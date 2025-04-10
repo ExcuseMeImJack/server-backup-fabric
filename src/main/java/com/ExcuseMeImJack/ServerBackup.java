@@ -16,6 +16,7 @@ import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Style;
 import net.minecraft.text.Text;
+import net.minecraft.text.TextColor;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.WorldSavePath;
 import org.slf4j.Logger;
@@ -254,7 +255,7 @@ public class ServerBackup implements ModInitializer {
 					Text.literal(
 							"The world is being restored to the backup from " + formattedDate + ". You will be disconnected.")
 							.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)),
-							false);
+					false);
 			player.networkHandler.disconnect(Text.literal("The world is being restored. Please reconnect shortly.")
 					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
 		}
@@ -350,8 +351,6 @@ public class ServerBackup implements ModInitializer {
 
 			syncPlayerData(player);
 
-			player.sendMessage(
-					Text.literal("Your inventory has been restored.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)), false);
 			context.getSource().sendMessage(
 					Text.literal("Player inventory restored successfully.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
 			return 1;
@@ -459,10 +458,10 @@ public class ServerBackup implements ModInitializer {
 		// Check if backup folder exists and is a valid directory
 		if (!backupFolder.exists() || !backupFolder.isDirectory()) {
 			LOGGER.error("Backup folder does not exist or is not a directory.");
-				context.getSource().sendMessage(Text.literal("Backup folder is missing or invalid.")
-						.setStyle(Style.EMPTY.withColor(Formatting.RED)));
-				return 1;
-			}
+			context.getSource().sendMessage(Text.literal("Backup folder is missing or invalid.")
+					.setStyle(Style.EMPTY.withColor(Formatting.RED)));
+			return 1;
+		}
 
 		// Read the backup history file
 		try (FileReader reader = new FileReader(backupHistoryFile)) {
@@ -494,20 +493,20 @@ public class ServerBackup implements ModInitializer {
 		File[] backupDirs = backupFolder.listFiles((dir, name) -> new File(dir, name).isDirectory());
 		if (backupDirs != null) {
 			for (File backupDir : backupDirs) {
-					boolean alreadyExists = backupHistory.values().stream()
-							.anyMatch(existingPath -> existingPath.getFileName().toString().equals(backupDir.getName()));
+				boolean alreadyExists = backupHistory.values().stream()
+						.anyMatch(existingPath -> existingPath.getFileName().toString().equals(backupDir.getName()));
 
-						if (!alreadyExists) {
-							LOGGER.info("Adding new backup directory to history: " + backupDir.getPath());
-								String newId = UUID.randomUUID().toString();
-								backupHistory.put(newId, backupDir.toPath());
-							}
-						}
-					} else {
-						LOGGER.error("Error accessing the backup folder.");
-				context.getSource().sendMessage(Text.literal("Error accessing the backup folder.")
-						.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
+				if (!alreadyExists) {
+					LOGGER.info("Adding new backup directory to history: " + backupDir.getPath());
+					String newId = UUID.randomUUID().toString();
+					backupHistory.put(newId, backupDir.toPath());
+				}
 			}
+		} else {
+			LOGGER.error("Error accessing the backup folder.");
+			context.getSource().sendMessage(Text.literal("Error accessing the backup folder.")
+					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
+		}
 
 		// Sort and display the backup list
 		if (backupHistory.isEmpty()) {
@@ -529,28 +528,32 @@ public class ServerBackup implements ModInitializer {
 
 			return formattedDate1.compareTo(formattedDate2);
 		});
+		Text listBuilder = Text.literal(""); // Start with an empty string
+		for (Map.Entry<String, Path> entry : sortedBackups) { // Iterate directly over the list of Map.Entry
+			String saveId = entry.getKey(); // Get the saveId from the entry
+			Path backupPath = entry.getValue(); // Get the backup path from the entry
 
-		// Build and send the backup list to the player
-		StringBuilder listBuilder = new StringBuilder();
-		for (Map.Entry<String, Path> entry : sortedBackups) {
-			String saveId = entry.getKey();
-			Path backupPath = entry.getValue();
+			String timestamp = backupPath.getFileName().toString().split("_")[0] + '_' +
+					backupPath.getFileName().toString().split("_")[1];
+			String formattedDate = formatTimestamp(timestamp);
 
-				String timestamp = backupPath.getFileName().toString().split("_")[0] + '_'
-						+ backupPath.getFileName().toString().split("_")[1];
-				String formattedDate = formatTimestamp(timestamp);
+			// Create the backup entry with color formatting
+			Text backupEntry = Text.literal("Backup ID: ")
+					.setStyle(Style.EMPTY.withColor(TextColor.fromRgb(0xFFFFFF)))
+					.append(Text.literal(saveId).setStyle(Style.EMPTY.withColor(TextColor.fromRgb(0x00FFFF))))
+					.append(Text.literal(" | Timestamp: ").setStyle(Style.EMPTY.withColor(TextColor.fromRgb(0xFFFFFF))))
+					.append(Text.literal(formattedDate).setStyle(Style.EMPTY.withColor(TextColor.fromRgb(0x00FF00))))
+					.append(Text.literal("\n"));
 
-				listBuilder.append("Backup ID: ")
-						.append(Text.literal(saveId).setStyle(Style.EMPTY.withColor(Formatting.AQUA)))
-						.append(" | Timestamp: ")
-						.append(Text.literal(formattedDate).setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
-			}
+			// Append the current backup entry to the main list builder
+			listBuilder = listBuilder.copy().append(backupEntry);
+		}
 
-		context.getSource()
-				.sendMessage(Text.literal(listBuilder.toString()).setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
+		// Send the final message to the player
+		context.getSource().sendMessage(listBuilder);
 		return 1;
-	}
 
+	}
 
 	private void copyDirectory(Path source, Path target) throws IOException {
 		Files.walk(source)

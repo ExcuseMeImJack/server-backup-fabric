@@ -44,21 +44,27 @@ import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
+
 public class ServerBackup implements ModInitializer {
+	private static final int TICKS_PER_MINUTE = 1200;
+	private static final String BACKUP_HISTORY_FILE = "backup_history.json";
+
 	public static final String MOD_ID = "ServerBackup";
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
-
-	private static final int TICKS_PER_MINUTE = 1200;
 	private int ticksSinceLastBackup = 0;
 	private int backupDelayMinutes = 10;
-	private static final String BACKUP_HISTORY_FILE = "backup_history.json";
 	private Map<String, Path> backupHistory = new HashMap<>();
 
 	@Override
 	public void onInitialize() {
-
 		loadBackupHistory();
+		registerCommands();
+		registerTickEvent();
+	}
 
+	
+	// Section: Command Registration
+	private void registerCommands() {
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
 			registerBackupCommand(dispatcher);
 			registerAutoDelayCommand(dispatcher);
@@ -66,19 +72,86 @@ public class ServerBackup implements ModInitializer {
 			registerRestorePlayerCommand(dispatcher);
 			registerListBackupsCommand(dispatcher);
 		});
+	}
 
-		ServerTickEvents.END_SERVER_TICK.register(server -> {
-			ticksSinceLastBackup++;
-			if (ticksSinceLastBackup >= TICKS_PER_MINUTE * backupDelayMinutes) {
-				LOGGER.info("Backup interval has passed. Starting automated world backup...");
-				try {
-					backupWorld(server);
-				} catch (IOException e) {
-					LOGGER.error("Automated backup failed", e);
-				}
-				ticksSinceLastBackup = 0;
+	private void registerBackupCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
+		dispatcher.register(CommandManager.literal("serverbackup")
+				.requires(source -> source.hasPermissionLevel(4))
+				.executes(this::runBackupCommand));
+	}
+
+	private void registerAutoDelayCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
+		dispatcher.register(CommandManager.literal("serverbackup")
+				.then(CommandManager.literal("autodelay")
+						.then(CommandManager.argument("time", IntegerArgumentType.integer())
+								.executes(this::setBackupDelay))));
+	}
+
+	private void registerRestoreCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
+		dispatcher.register(CommandManager.literal("serverbackup")
+				.then(CommandManager.literal("restoreworld")
+						.then(CommandManager.argument("saveid", StringArgumentType.string())
+								.executes(this::restoreWorld))));
+	}
+
+	private void registerRestorePlayerCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
+		dispatcher.register(CommandManager.literal("serverbackup")
+				.then(CommandManager.literal("restoreplayer")
+						.then(CommandManager.argument("saveid", StringArgumentType.string())
+								.then(CommandManager.argument("player", StringArgumentType.string())
+										.executes(this::restorePlayerInventory)))));
+	}
+
+	private void registerListBackupsCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
+		dispatcher.register(CommandManager.literal("serverbackup")
+				.then(CommandManager.literal("list")
+						.executes(this::listBackups)));
+	}
+
+
+	// Section: Backup Management
+	private void backupWorld(MinecraftServer server) throws IOException {
+		Path serverDir = server.getRunDirectory().toAbsolutePath();
+
+		Path backupsDir = serverDir.resolve("server_backups");
+
+		Files.createDirectories(backupsDir);
+
+		String timestamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
+
+		String saveId = generateRandomSaveId();
+
+		Path backupDest = backupsDir.resolve(timestamp + "_" + saveId);
+
+		Path worldDir = server.getSavePath(WorldSavePath.ROOT);
+
+		Path tempBackupDir = Files.createTempDirectory("world_backup_");
+
+		LOGGER.info("Temporary backup location: " + tempBackupDir);
+
+		try {
+			LOGGER.info("World backup started.");
+
+			copyDirectory(worldDir, tempBackupDir);
+			LOGGER.info("Temporary backup completed.");
+
+			Files.move(tempBackupDir, backupDest, StandardCopyOption.REPLACE_EXISTING);
+			LOGGER.info("Backup successfully moved to: " + backupDest);
+
+			backupHistory.put(saveId, backupDest);
+		} catch (IOException e) {
+			LOGGER.error("Backup failed", e);
+			throw e;
+		} finally {
+			if (Files.exists(tempBackupDir)) {
+				deleteDirectory(tempBackupDir);
 			}
-		});
+		}
+
+		LOGGER.info("World backup completed.");
+		saveBackupHistory();
+
+		limitBackups(backupsDir, 10);
 	}
 
 	private void saveBackupHistory() {
@@ -171,38 +244,38 @@ public class ServerBackup implements ModInitializer {
 		}
 	}
 
-	private void registerBackupCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
-		dispatcher.register(CommandManager.literal("serverbackup")
-				.requires(source -> source.hasPermissionLevel(4))
-				.executes(this::runBackupCommand));
+	private void limitBackups(Path backupsDir, int maxBackups) throws IOException {
+		if (Files.list(backupsDir).count() > maxBackups) {
+			List<Path> backups = new ArrayList<>();
+			Files.list(backupsDir).forEach(backups::add);
+			backups.sort(Comparator.comparing(path -> {
+				try {
+					return Files.getLastModifiedTime(path);
+				} catch (IOException e) {
+					throw new RuntimeException(e);
+				}
+			}));
+			Path oldestBackup = backups.get(0);
+			deleteDirectory(oldestBackup);
+			LOGGER.info("Deleted old backup: " + oldestBackup.getFileName());
+		}
 	}
 
-	private void registerAutoDelayCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
-		dispatcher.register(CommandManager.literal("serverbackup")
-				.then(CommandManager.literal("autodelay")
-						.then(CommandManager.argument("time", IntegerArgumentType.integer())
-								.executes(this::setBackupDelay))));
-	}
+	private void syncPlayerData(ServerPlayerEntity player) {
+		player.networkHandler.sendPacket(new HealthUpdateS2CPacket(
+				player.getHealth(),
+				player.getHungerManager().getFoodLevel(),
+				player.getHungerManager().getSaturationLevel()));
 
-	private void registerRestoreCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
-		dispatcher.register(CommandManager.literal("serverbackup")
-				.then(CommandManager.literal("restoreworld")
-						.then(CommandManager.argument("saveid", StringArgumentType.string())
-								.executes(this::restoreWorld))));
-	}
+		List<Pair<EquipmentSlot, ItemStack>> equipmentList = new ArrayList<>();
+		for (EquipmentSlot slot : EquipmentSlot.values()) {
+			ItemStack stack = player.getEquippedStack(slot);
+			if (!stack.isEmpty()) {
+				equipmentList.add(new Pair<>(slot, stack));
+			}
+		}
+		player.networkHandler.sendPacket(new EntityEquipmentUpdateS2CPacket(player.getId(), equipmentList));
 
-	private void registerRestorePlayerCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
-		dispatcher.register(CommandManager.literal("serverbackup")
-				.then(CommandManager.literal("restoreplayer")
-						.then(CommandManager.argument("saveid", StringArgumentType.string())
-								.then(CommandManager.argument("player", StringArgumentType.string())
-										.executes(this::restorePlayerInventory)))));
-	}
-
-	private void registerListBackupsCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
-		dispatcher.register(CommandManager.literal("serverbackup")
-				.then(CommandManager.literal("list")
-						.executes(this::listBackups)));
 	}
 
 	private int runBackupCommand(CommandContext<ServerCommandSource> context) {
@@ -228,211 +301,6 @@ public class ServerBackup implements ModInitializer {
 		context.getSource().sendMessage(Text.literal("Automatic backup delay set to " + delay + " minutes.")
 				.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
 		return 1;
-	}
-
-	private int restoreWorld(CommandContext<ServerCommandSource> context) {
-		String saveId = StringArgumentType.getString(context, "saveid");
-		MinecraftServer server = context.getSource().getServer();
-
-		// Check if the backup exists
-		Path backupPath = backupHistory.get(saveId);
-		if (backupPath == null) {
-			context.getSource().sendError(
-					Text.literal("No backup found with ID " + saveId).setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
-			return 0;
-		}
-
-		// Get the timestamp and send a message to the user
-		String timestamp = backupPath.getFileName().toString().split("_")[0];
-		String formattedDate = formatTimestamp(timestamp);
-		context.getSource()
-				.sendMessage(Text.literal("Restoring world from backup " + saveId + " (Timestamp: " + formattedDate + ")")
-						.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
-
-		// Step 1: Kick all players
-		for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
-			player.sendMessage(
-					Text.literal(
-							"The world is being restored to the backup from " + formattedDate + ". You will be disconnected.")
-							.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)),
-					false);
-			player.networkHandler.disconnect(Text.literal("The world is being restored. Please reconnect shortly.")
-					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
-		}
-
-		// Optional: Wait for players to disconnect (not the best solution but works for
-		// now)
-		try {
-			Thread.sleep(5000); // Wait for a few seconds to ensure players disconnect
-		} catch (InterruptedException e) {
-			LOGGER.error("Error waiting for players to disconnect", e);
-		}
-
-		// Step 2: Restore the world from the backup
-		try {
-			restoreBackup(server, backupPath);
-			context.getSource()
-					.sendMessage(Text.literal("World restored successfully.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
-		} catch (IOException e) {
-			LOGGER.error("Failed to restore world", e);
-			context.getSource().sendError(
-					Text.literal("Failed to restore world: " + e.getMessage()).setStyle(Style.EMPTY.withColor(Formatting.RED)));
-			return 0;
-		}
-
-		// Step 3: Restart the server to load the restored world
-		restartServer(server);
-
-		return 1;
-	}
-
-	private void restartServer(MinecraftServer server) {
-		// This method will trigger the server to restart after the world is restored
-		LOGGER.info("Restarting the server...");
-
-		// Send a restart message to all players
-		server.getPlayerManager().broadcast(Text.literal("Server is restarting..."), false);
-
-		// Stop the server, which will trigger a restart on most environments
-		server.stop(false);
-	}
-
-	private int restorePlayerInventory(CommandContext<ServerCommandSource> context) {
-		String saveId = StringArgumentType.getString(context, "saveid");
-		String playerName = StringArgumentType.getString(context, "player");
-
-		Path backupPath = backupHistory.get(saveId);
-		if (backupPath == null) {
-			context.getSource().sendError(
-					Text.literal("No backup found with ID " + saveId).setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
-			return 0;
-		}
-
-		context.getSource()
-				.sendMessage(Text.literal("Restoring inventory for player " + playerName + " from backup " + saveId)
-						.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
-
-		UUID playerUUID = getPlayerUUID(playerName, context.getSource());
-		if (playerUUID == null) {
-			context.getSource()
-					.sendError(Text.literal("Player not found: " + playerName).setStyle(Style.EMPTY.withColor(Formatting.RED)));
-			return 0;
-		}
-
-		Path playerFile = backupPath.resolve("playerdata").resolve(playerUUID.toString() + ".dat");
-		if (!Files.exists(playerFile)) {
-			context.getSource().sendError(Text.literal("No inventory data found for player " + playerName)
-					.setStyle(Style.EMPTY.withColor(Formatting.RED)));
-			return 0;
-		}
-
-		try {
-			MinecraftServer server = context.getSource().getServer();
-			ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerUUID);
-
-			if (player == null) {
-				context.getSource().sendError(Text.literal("Player must be online to restore inventory.")
-						.setStyle(Style.EMPTY.withColor(Formatting.RED)));
-				return 0;
-			}
-
-			NbtCompound playerNBT;
-			try (InputStream in = Files.newInputStream(playerFile)) {
-				playerNBT = NbtIo.readCompressed(in, NbtSizeTracker.ofUnlimitedBytes());
-			}
-
-			double x = player.getX();
-			double y = player.getY();
-			double z = player.getZ();
-
-			player.readNbt(playerNBT);
-
-			player.refreshPositionAndAngles(x, y, z, player.getYaw(), player.getPitch());
-
-			syncPlayerData(player);
-
-			context.getSource().sendMessage(
-					Text.literal("Player inventory restored successfully.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
-			return 1;
-
-		} catch (IOException e) {
-			LOGGER.error("Failed to restore player inventory", e);
-			context.getSource().sendError(Text.literal("Failed to restore player inventory: " + e.getMessage())
-					.setStyle(Style.EMPTY.withColor(Formatting.RED)));
-			return 0;
-		}
-	}
-
-	private void syncPlayerData(ServerPlayerEntity player) {
-		player.networkHandler.sendPacket(new HealthUpdateS2CPacket(
-				player.getHealth(),
-				player.getHungerManager().getFoodLevel(),
-				player.getHungerManager().getSaturationLevel()));
-
-		List<Pair<EquipmentSlot, ItemStack>> equipmentList = new ArrayList<>();
-		for (EquipmentSlot slot : EquipmentSlot.values()) {
-			ItemStack stack = player.getEquippedStack(slot);
-			if (!stack.isEmpty()) {
-				equipmentList.add(new Pair<>(slot, stack));
-			}
-		}
-		player.networkHandler.sendPacket(new EntityEquipmentUpdateS2CPacket(player.getId(), equipmentList));
-
-	}
-
-	private UUID getPlayerUUID(String playerName, ServerCommandSource source) {
-		MinecraftServer server = source.getServer();
-		return server.getUserCache().findByName(playerName).map(gameProfile -> gameProfile.getId()).orElse(null);
-	}
-
-	private void backupWorld(MinecraftServer server) throws IOException {
-		Path serverDir = server.getRunDirectory().toAbsolutePath();
-
-		Path backupsDir = serverDir.resolve("server_backups");
-
-		Files.createDirectories(backupsDir);
-
-		String timestamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
-
-		String saveId = generateRandomSaveId();
-
-		Path backupDest = backupsDir.resolve(timestamp + "_" + saveId);
-
-		Path worldDir = server.getSavePath(WorldSavePath.ROOT);
-
-		Path tempBackupDir = Files.createTempDirectory("world_backup_");
-
-		LOGGER.info("Temporary backup location: " + tempBackupDir);
-
-		try {
-			LOGGER.info("World backup started.");
-
-			copyDirectory(worldDir, tempBackupDir);
-			LOGGER.info("Temporary backup completed.");
-
-			Files.move(tempBackupDir, backupDest, StandardCopyOption.REPLACE_EXISTING);
-			LOGGER.info("Backup successfully moved to: " + backupDest);
-
-			backupHistory.put(saveId, backupDest);
-		} catch (IOException e) {
-			LOGGER.error("Backup failed", e);
-			throw e;
-		} finally {
-			if (Files.exists(tempBackupDir)) {
-				deleteDirectory(tempBackupDir);
-			}
-		}
-
-		LOGGER.info("World backup completed.");
-		saveBackupHistory();
-
-		limitBackups(backupsDir, 10);
-	}
-
-	private String generateRandomSaveId() {
-		Random rand = new Random();
-		int saveId = rand.nextInt(90000) + 10000;
-		return Integer.toString(saveId);
 	}
 
 	private int listBackups(CommandContext<ServerCommandSource> context) {
@@ -555,6 +423,149 @@ public class ServerBackup implements ModInitializer {
 
 	}
 
+
+	// Section: Restore Management
+	private int restoreWorld(CommandContext<ServerCommandSource> context) {
+		String saveId = StringArgumentType.getString(context, "saveid");
+		MinecraftServer server = context.getSource().getServer();
+
+		// Check if the backup exists
+		Path backupPath = backupHistory.get(saveId);
+		if (backupPath == null) {
+			context.getSource().sendError(
+					Text.literal("No backup found with ID " + saveId).setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
+			return 0;
+		}
+
+		// Get the timestamp and send a message to the user
+		String timestamp = backupPath.getFileName().toString().split("_")[0];
+		String formattedDate = formatTimestamp(timestamp);
+		context.getSource()
+				.sendMessage(Text.literal("Restoring world from backup " + saveId + " (Timestamp: " + formattedDate + ")")
+						.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
+
+		// Step 1: Kick all players
+		for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
+			player.sendMessage(
+					Text.literal(
+							"The world is being restored to the backup from " + formattedDate + ". You will be disconnected.")
+							.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)),
+					false);
+			player.networkHandler.disconnect(Text.literal("The world is being restored. Please reconnect shortly.")
+					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
+		}
+
+		// Optional: Wait for players to disconnect (not the best solution but works for
+		// now)
+		try {
+			Thread.sleep(5000); // Wait for a few seconds to ensure players disconnect
+		} catch (InterruptedException e) {
+			LOGGER.error("Error waiting for players to disconnect", e);
+		}
+
+		// Step 2: Restore the world from the backup
+		try {
+			restoreBackup(server, backupPath);
+			context.getSource()
+					.sendMessage(Text.literal("World restored successfully.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
+		} catch (IOException e) {
+			LOGGER.error("Failed to restore world", e);
+			context.getSource().sendError(
+					Text.literal("Failed to restore world: " + e.getMessage()).setStyle(Style.EMPTY.withColor(Formatting.RED)));
+			return 0;
+		}
+
+		// Step 3: Restart the server to load the restored world
+		restartServer(server);
+
+		return 1;
+	}
+
+	private void restoreBackup(MinecraftServer server, Path backupPath) throws IOException {
+		Path worldDir = server.getSavePath(WorldSavePath.ROOT);
+		deleteDirectory(worldDir);
+		copyDirectory(backupPath, worldDir);
+	}
+
+	private int restorePlayerInventory(CommandContext<ServerCommandSource> context) {
+		String saveId = StringArgumentType.getString(context, "saveid");
+		String playerName = StringArgumentType.getString(context, "player");
+
+		Path backupPath = backupHistory.get(saveId);
+		if (backupPath == null) {
+			context.getSource().sendError(
+					Text.literal("No backup found with ID " + saveId).setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
+			return 0;
+		}
+
+		context.getSource()
+				.sendMessage(Text.literal("Restoring inventory for player " + playerName + " from backup " + saveId)
+						.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
+
+		UUID playerUUID = getPlayerUUID(playerName, context.getSource());
+		if (playerUUID == null) {
+			context.getSource()
+					.sendError(Text.literal("Player not found: " + playerName).setStyle(Style.EMPTY.withColor(Formatting.RED)));
+			return 0;
+		}
+
+		Path playerFile = backupPath.resolve("playerdata").resolve(playerUUID.toString() + ".dat");
+		if (!Files.exists(playerFile)) {
+			context.getSource().sendError(Text.literal("No inventory data found for player " + playerName)
+					.setStyle(Style.EMPTY.withColor(Formatting.RED)));
+			return 0;
+		}
+
+		try {
+			MinecraftServer server = context.getSource().getServer();
+			ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerUUID);
+
+			if (player == null) {
+				context.getSource().sendError(Text.literal("Player must be online to restore inventory.")
+						.setStyle(Style.EMPTY.withColor(Formatting.RED)));
+				return 0;
+			}
+
+			NbtCompound playerNBT;
+			try (InputStream in = Files.newInputStream(playerFile)) {
+				playerNBT = NbtIo.readCompressed(in, NbtSizeTracker.ofUnlimitedBytes());
+			}
+
+			double x = player.getX();
+			double y = player.getY();
+			double z = player.getZ();
+
+			player.readNbt(playerNBT);
+
+			player.refreshPositionAndAngles(x, y, z, player.getYaw(), player.getPitch());
+
+			syncPlayerData(player);
+
+			context.getSource().sendMessage(
+					Text.literal("Player inventory restored successfully.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
+			return 1;
+
+		} catch (IOException e) {
+			LOGGER.error("Failed to restore player inventory", e);
+			context.getSource().sendError(Text.literal("Failed to restore player inventory: " + e.getMessage())
+					.setStyle(Style.EMPTY.withColor(Formatting.RED)));
+			return 0;
+		}
+	}
+
+	private void restartServer(MinecraftServer server) {
+		// This method will trigger the server to restart after the world is restored
+		LOGGER.info("Restarting the server...");
+
+		// Send a restart message to all players
+		server.getPlayerManager().broadcast(Text.literal("Server is restarting..."), false);
+
+		// Stop the server, which will trigger a restart on most environments
+		server.stop(false);
+	}
+
+
+	// Section: Utility Methods
 	private void copyDirectory(Path source, Path target) throws IOException {
 		Files.walk(source)
 				.filter(path -> {
@@ -581,29 +592,6 @@ public class ServerBackup implements ModInitializer {
 				});
 	}
 
-	private void restoreBackup(MinecraftServer server, Path backupPath) throws IOException {
-		Path worldDir = server.getSavePath(WorldSavePath.ROOT);
-		deleteDirectory(worldDir);
-		copyDirectory(backupPath, worldDir);
-	}
-
-	private void limitBackups(Path backupsDir, int maxBackups) throws IOException {
-		if (Files.list(backupsDir).count() > maxBackups) {
-			List<Path> backups = new ArrayList<>();
-			Files.list(backupsDir).forEach(backups::add);
-			backups.sort(Comparator.comparing(path -> {
-				try {
-					return Files.getLastModifiedTime(path);
-				} catch (IOException e) {
-					throw new RuntimeException(e);
-				}
-			}));
-			Path oldestBackup = backups.get(0);
-			deleteDirectory(oldestBackup);
-			LOGGER.info("Deleted old backup: " + oldestBackup.getFileName());
-		}
-	}
-
 	private void deleteDirectory(Path path) throws IOException {
 		Files.walk(path)
 				.sorted((a, b) -> b.compareTo(a))
@@ -614,6 +602,12 @@ public class ServerBackup implements ModInitializer {
 						throw new RuntimeException("Failed to delete " + p, e);
 					}
 				});
+	}
+
+	private String generateRandomSaveId() {
+		Random rand = new Random();
+		int saveId = rand.nextInt(90000) + 10000;
+		return Integer.toString(saveId);
 	}
 
 	private String formatTimestamp(String timestamp) {
@@ -633,5 +627,27 @@ public class ServerBackup implements ModInitializer {
 			LOGGER.error("Failed to parse timestamp: " + timestamp, e);
 			return "Invalid timestamp";
 		}
+	}
+
+	private UUID getPlayerUUID(String playerName, ServerCommandSource source) {
+		MinecraftServer server = source.getServer();
+		return server.getUserCache().findByName(playerName).map(gameProfile -> gameProfile.getId()).orElse(null);
+	}
+
+	// Section: Tick Event
+	private void registerTickEvent() {
+		ServerTickEvents.START_SERVER_TICK.register(server -> {
+			ticksSinceLastBackup++;
+			if (ticksSinceLastBackup >= backupDelayMinutes * TICKS_PER_MINUTE) {
+				LOGGER.info("Backup interval has passed. Starting automated world backup...");
+				try {
+					backupWorld(server);
+					LOGGER.info("Automatic backup completed successfully.");
+				} catch (IOException e) {
+					LOGGER.error("Automatic backup failed", e);
+				}
+				ticksSinceLastBackup = 0;
+			}
+		});
 	}
 }

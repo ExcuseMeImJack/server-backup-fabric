@@ -106,14 +106,13 @@ public class ServerBackup implements ModInitializer {
 			SuggestionsBuilder builder) {
 		List<Map.Entry<String, Path>> sortedBackups = new ArrayList<>(backupHistory.entrySet());
 
-		// Sort backups by last modified time
 		sortedBackups.sort(Comparator.comparing(entry -> {
 			try {
-				if (Files.exists(entry.getValue())) { // Check if the path exists
+				if (Files.exists(entry.getValue())) {
 					return Files.getLastModifiedTime(entry.getValue());
 				} else {
 					LOGGER.warn("Backup path does not exist: " + entry.getValue());
-					return FileTime.fromMillis(0); // Default to epoch time if the path doesn't exist
+					return FileTime.fromMillis(0);
 				}
 			} catch (IOException e) {
 				LOGGER.error("Failed to get last modified time for: " + entry.getValue(), e);
@@ -121,7 +120,6 @@ public class ServerBackup implements ModInitializer {
 			}
 		}));
 
-		// Suggest only the folder names that do not start with "manual_" or "auto_"
 		for (Map.Entry<String, Path> entry : sortedBackups) {
 			String backupName = entry.getKey();
 			if (!backupName.startsWith("manual_") && !backupName.startsWith("auto_")) {
@@ -157,19 +155,13 @@ public class ServerBackup implements ModInitializer {
 		Path worldDir = server.getSavePath(WorldSavePath.ROOT);
 		Path tempBackupDir = Files.createTempDirectory("world_backup_");
 
-		LOGGER.info("Temporary backup location: " + tempBackupDir);
+		LOGGER.info("Starting world backup to: " + backupDest);
 
 		try {
-			LOGGER.info("World backup started.");
 			copyDirectory(worldDir, tempBackupDir);
-			LOGGER.info("Temporary backup completed.");
-
 			Files.move(tempBackupDir, backupDest, StandardCopyOption.REPLACE_EXISTING);
-			LOGGER.info("Backup successfully moved to: " + backupDest);
-
 			backupHistory.put(backupID, backupDest);
 
-			// Limit manual backups to 5
 			if (backupType.equals("manual")) {
 				limitBackups(backupsDir, 5);
 			}
@@ -182,12 +174,13 @@ public class ServerBackup implements ModInitializer {
 			}
 		}
 
-		LOGGER.info("World backup completed.");
 		saveBackupHistory();
 
 		if (backupType.equals("auto")) {
 			limitBackups(backupsDir, MAX_BACKUPS);
 		}
+
+		LOGGER.info("World backup completed.");
 	}
 
 	private void saveBackupHistory() {
@@ -229,7 +222,7 @@ public class ServerBackup implements ModInitializer {
             for (Map.Entry<String, String> entry : backupHistoryAsStrings.entrySet()) {
                 Path backupPath = Paths.get(entry.getValue());
                 if (Files.exists(backupPath) && Files.isDirectory(backupPath)) {
-                    backupHistory.put(entry.getKey(), backupPath); // Keep valid backups
+                    backupHistory.put(entry.getKey(), backupPath);
                 } else {
                     LOGGER.warn("Backup directory no longer exists: " + backupPath);
                 }
@@ -260,19 +253,23 @@ public class ServerBackup implements ModInitializer {
 	}
 
 	private void limitBackups(Path backupsDir, int maxBackups) throws IOException {
-		if (Files.list(backupsDir).count() > maxBackups) {
-			List<Path> backups = new ArrayList<>();
-			Files.list(backupsDir).forEach(backups::add);
-			backups.sort(Comparator.comparing(path -> {
-				try {
-					return Files.getLastModifiedTime(path);
-				} catch (IOException e) {
-					throw new RuntimeException(e);
-				}
-			}));
+		List<Path> backups = Files.list(backupsDir)
+				.filter(Files::isDirectory)
+				.sorted(Comparator.comparing(path -> {
+					try {
+						return Files.getLastModifiedTime(path);
+					} catch (IOException e) {
+						LOGGER.error("Failed to get last modified time for: " + path, e);
+						return FileTime.fromMillis(0);
+					}
+				}))
+				.toList();
+
+		while (backups.size() > maxBackups) {
 			Path oldestBackup = backups.get(0);
 			deleteDirectory(oldestBackup);
-			LOGGER.info("Deleted old auto backup: " + oldestBackup.getFileName());
+			LOGGER.info("Deleted old backup: " + oldestBackup.getFileName());
+			backups = backups.subList(1, backups.size());
 		}
 	}
 
@@ -281,7 +278,6 @@ public class ServerBackup implements ModInitializer {
 		context.getSource()
 				.sendMessage(Text.literal("Starting manual backup...").setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
 
-		// Trigger the save-all command on the main thread
 		server.execute(() -> {
 			try {
 				LOGGER.info("Executing save-all command...");
@@ -295,13 +291,10 @@ public class ServerBackup implements ModInitializer {
 			}
 		});
 
-		// Offload the backup process to a separate thread
 		new Thread(() -> {
 			try {
-				// Perform the backup
 				backupWorld(server, "manual");
 
-				// Notify the user that the backup is complete
 				context.getSource().sendMessage(
 						Text.literal("Manual backup completed successfully.")
 								.setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
@@ -330,28 +323,24 @@ public class ServerBackup implements ModInitializer {
 
 		Map<String, Path> backupHistory = new HashMap<>();
 
-		// Load manual backups
 		if (manualBackupsFolder.exists() && manualBackupsFolder.isDirectory()) {
 			for (File backupDir : manualBackupsFolder.listFiles(File::isDirectory)) {
 				backupHistory.put("manual_" + backupDir.getName(), backupDir.toPath());
 			}
 		}
 
-		// Load auto backups
 		if (autoBackupsFolder.exists() && autoBackupsFolder.isDirectory()) {
 			for (File backupDir : autoBackupsFolder.listFiles(File::isDirectory)) {
 				backupHistory.put("auto_" + backupDir.getName(), backupDir.toPath());
 			}
 		}
 
-		// Display backups
 		if (backupHistory.isEmpty()) {
 			context.getSource().sendMessage(Text.literal("No backups found.")
 					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
 			return 1;
 		}
 
-		// Sort backups by last modified time
 		List<Map.Entry<String, Path>> sortedBackups = new ArrayList<>(backupHistory.entrySet());
 		sortedBackups.sort(Comparator.comparing(entry -> {
 			try {
@@ -362,40 +351,35 @@ public class ServerBackup implements ModInitializer {
 			}
 		}));
 
-		// Add column headers
 		Text listBuilder = Text.literal("T | ID       | Date           | Time\n")
 				.setStyle(Style.EMPTY.withColor(Formatting.GOLD))
 				.append(Text.literal("-------------------------------\n")
 						.setStyle(Style.EMPTY.withColor(Formatting.GRAY)));
 
-		// Build the list message
 		for (Map.Entry<String, Path> entry : sortedBackups) {
 			String backupType = entry.getKey().startsWith("manual") ? "M" : "A";
 			String backupName = entry.getKey().substring(backupType.equals("M") ? 7 : 5);
 
-			// Split the backupName by underscores
 			String[] parts = backupName.split("_");
 			if (parts.length < 3) {
-				LOGGER.warn("Invalid backup name format: " + backupName);
 				continue;
 			}
 
-			String backupDate = parts[0].replace("-", "/"); // Format date as 0000/00/00
-			String backupTime = parts[1].replace("-", ":"); // Format time as 00:00:00
-			String backupID = parts[2];
+				String backupDate = parts[0].replace("-", "/");
+				String backupTime = parts[1].replace("-", ":");
+				String backupID = parts[2];
 
-			// Format the backup entry with color coding
-			Text backupEntry = Text.literal("")
-					.append(Text.literal(backupType)
-							.setStyle(Style.EMPTY.withColor(backupType.equals("M") ? Formatting.RED : Formatting.GREEN)))
-					.append(Text.literal(" | ").setStyle(Style.EMPTY.withColor(Formatting.WHITE)))
-					.append(Text.literal(backupID)
-							.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)))
-					.append(Text.literal(" | " + backupDate + " | " + backupTime + "\n")
-							.setStyle(Style.EMPTY.withColor(Formatting.WHITE)));
+				Text backupEntry = Text.literal("")
+						.append(Text.literal(backupType)
+								.setStyle(Style.EMPTY.withColor(backupType.equals("M") ? Formatting.RED : Formatting.GREEN)))
+						.append(Text.literal(" | ").setStyle(Style.EMPTY.withColor(Formatting.WHITE)))
+						.append(Text.literal(backupID)
+								.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)))
+						.append(Text.literal(" | " + backupDate + " | " + backupTime + "\n")
+								.setStyle(Style.EMPTY.withColor(Formatting.WHITE)));
 
-			listBuilder = listBuilder.copy().append(backupEntry);
-		}
+				listBuilder = listBuilder.copy().append(backupEntry);
+			}
 
 		context.getSource().sendMessage(listBuilder);
 		return 1;
@@ -406,7 +390,6 @@ public class ServerBackup implements ModInitializer {
 		String backupID = StringArgumentType.getString(context, "backupID");
 		MinecraftServer server = context.getSource().getServer();
 
-		// Check if the backup exists
 		Path backupPath = backupHistory.get(backupID);
 		if (backupPath == null) {
 			context.getSource().sendError(
@@ -414,25 +397,14 @@ public class ServerBackup implements ModInitializer {
 			return 0;
 		}
 
-		// Get the timestamp and send a message to the user
-		String timestamp = backupPath.getFileName().toString().split("_")[0];
-		String formattedDate = formatTimestamp(timestamp);
-		context.getSource()
-				.sendMessage(Text.literal("Restoring world from backup " + backupID + " (Timestamp: " + formattedDate + ")")
-						.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
+		context.getSource().sendMessage(
+				Text.literal("Restoring world from backup " + backupID).setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
 
-		// Step 1: Kick all players
 		for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
-			player.sendMessage(
-					Text.literal(
-							"The world is being restored to the backup from " + formattedDate + ". You will be disconnected.")
-							.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)),
-					false);
 			player.networkHandler.disconnect(Text.literal("The world is being restored. Please reconnect shortly.")
 					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
 		}
 
-		// Step 2: Restore the world from the backup
 		try {
 			restoreBackup(server, backupPath);
 			context.getSource()
@@ -444,11 +416,9 @@ public class ServerBackup implements ModInitializer {
 			return 0;
 		}
 
-		// Step 3: Schedule server shutdown to load the restored world
 		server.execute(() -> {
-			LOGGER.info("Restarting the server to load the restored world...");
 			server.getPlayerManager().broadcast(Text.literal("Server is restarting to load the restored world..."), false);
-			server.stop(false); // Stop the server, which will trigger a restart in most environments
+			server.stop(false);
 		});
 
 		return 1;
@@ -569,25 +539,6 @@ public class ServerBackup implements ModInitializer {
 		Random rand = new Random();
 		int saveId = rand.nextInt(90000) + 10000;
 		return Integer.toString(saveId);
-	}
-
-	private String formatTimestamp(String timestamp) {
-		try {
-			String formattedTimestamp = timestamp;
-
-			if (timestamp.length() <= 10) {
-				formattedTimestamp += "_00-00-00";
-			}
-
-			SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss");
-			Date parsedDate = dateFormat.parse(formattedTimestamp);
-
-			SimpleDateFormat readableDateFormat = new SimpleDateFormat("MMM dd, yyyy HH:mm:ss");
-			return readableDateFormat.format(parsedDate);
-		} catch (Exception e) {
-			LOGGER.error("Failed to parse timestamp: " + timestamp, e);
-			return "Invalid timestamp";
-		}
 	}
 
 	private UUID getPlayerUUID(String playerName, ServerCommandSource source) {

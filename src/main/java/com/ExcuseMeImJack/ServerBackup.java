@@ -1,60 +1,47 @@
 package com.ExcuseMeImJack;
 
-import net.fabricmc.api.ModInitializer;
-import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
-import net.minecraft.entity.EquipmentSlot;
-import net.minecraft.item.ItemStack;
-import net.minecraft.nbt.NbtCompound;
-import net.minecraft.nbt.NbtIo;
-import net.minecraft.nbt.NbtSizeTracker;
-import net.minecraft.network.packet.s2c.play.EntityEquipmentUpdateS2CPacket;
-import net.minecraft.network.packet.s2c.play.HealthUpdateS2CPacket;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.command.CommandManager;
-import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.text.Style;
-import net.minecraft.text.Text;
-import net.minecraft.text.TextColor;
-import net.minecraft.util.Formatting;
-import net.minecraft.util.WorldSavePath;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import net.fabricmc.api.*;
+import net.fabricmc.fabric.api.command.v2.*;
+import net.fabricmc.fabric.api.event.lifecycle.v1.*;
+import net.minecraft.entity.*;
+import net.minecraft.item.*;
+import net.minecraft.nbt.*;
+import net.minecraft.network.packet.s2c.play.*;
+import net.minecraft.server.*;
+import net.minecraft.server.command.*;
+import net.minecraft.server.network.*;
+import net.minecraft.text.*;
+import net.minecraft.util.*;
+import org.slf4j.*;
 
-import com.google.common.reflect.TypeToken;
-import com.google.gson.Gson;
-import com.google.gson.JsonSyntaxException;
-import com.mojang.brigadier.CommandDispatcher;
-import com.mojang.brigadier.arguments.IntegerArgumentType;
-import com.mojang.brigadier.arguments.StringArgumentType;
-import com.mojang.brigadier.context.CommandContext;
+import com.google.common.reflect.*;
+import com.google.gson.*;
+import com.mojang.brigadier.*;
+import com.mojang.brigadier.arguments.*;
+import com.mojang.brigadier.context.*;
 import com.mojang.datafixers.util.Pair;
 
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.InputStream;
-import java.lang.reflect.Type;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.text.SimpleDateFormat;
+import java.io.*;
+import java.lang.reflect.*;
+import java.nio.file.*;
+import java.nio.file.attribute.FileTime;
+import java.text.*;
 import java.util.*;
 
-
 public class ServerBackup implements ModInitializer {
+
+	// Constants
 	private static final int TICKS_PER_MINUTE = 1200;
 	private static final String BACKUP_HISTORY_FILE = "backup_history.json";
-
 	public static final String MOD_ID = "ServerBackup";
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+	// Fields
 	private int ticksSinceLastBackup = 0;
 	private int backupDelayMinutes = 10;
 	private Map<String, Path> backupHistory = new HashMap<>();
 
+	// Initialization
 	@Override
 	public void onInitialize() {
 		loadBackupHistory();
@@ -62,7 +49,6 @@ public class ServerBackup implements ModInitializer {
 		registerTickEvent();
 	}
 
-	
 	// Section: Command Registration
 	private void registerCommands() {
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
@@ -108,30 +94,26 @@ public class ServerBackup implements ModInitializer {
 						.executes(this::listBackups)));
 	}
 
-
 	// Section: Backup Management
-	private void backupWorld(MinecraftServer server) throws IOException {
+	private void backupWorld(MinecraftServer server, String backupType) throws IOException {
 		Path serverDir = server.getRunDirectory().toAbsolutePath();
 
-		Path backupsDir = serverDir.resolve("server_backups");
+		Path backupsDir = serverDir.resolve("server_backups")
+				.resolve(backupType.equals("manual") ? "manual_backups" : "auto_backups");
 
 		Files.createDirectories(backupsDir);
 
 		String timestamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
-
 		String saveId = generateRandomSaveId();
 
 		Path backupDest = backupsDir.resolve(timestamp + "_" + saveId);
-
 		Path worldDir = server.getSavePath(WorldSavePath.ROOT);
-
 		Path tempBackupDir = Files.createTempDirectory("world_backup_");
 
 		LOGGER.info("Temporary backup location: " + tempBackupDir);
 
 		try {
 			LOGGER.info("World backup started.");
-
 			copyDirectory(worldDir, tempBackupDir);
 			LOGGER.info("Temporary backup completed.");
 
@@ -151,7 +133,9 @@ public class ServerBackup implements ModInitializer {
 		LOGGER.info("World backup completed.");
 		saveBackupHistory();
 
-		limitBackups(backupsDir, 10);
+		if (backupType.equals("auto")) {
+			limitBackups(backupsDir, 10);
+		}
 	}
 
 	private void saveBackupHistory() {
@@ -257,25 +241,8 @@ public class ServerBackup implements ModInitializer {
 			}));
 			Path oldestBackup = backups.get(0);
 			deleteDirectory(oldestBackup);
-			LOGGER.info("Deleted old backup: " + oldestBackup.getFileName());
+			LOGGER.info("Deleted old auto backup: " + oldestBackup.getFileName());
 		}
-	}
-
-	private void syncPlayerData(ServerPlayerEntity player) {
-		player.networkHandler.sendPacket(new HealthUpdateS2CPacket(
-				player.getHealth(),
-				player.getHungerManager().getFoodLevel(),
-				player.getHungerManager().getSaturationLevel()));
-
-		List<Pair<EquipmentSlot, ItemStack>> equipmentList = new ArrayList<>();
-		for (EquipmentSlot slot : EquipmentSlot.values()) {
-			ItemStack stack = player.getEquippedStack(slot);
-			if (!stack.isEmpty()) {
-				equipmentList.add(new Pair<>(slot, stack));
-			}
-		}
-		player.networkHandler.sendPacket(new EntityEquipmentUpdateS2CPacket(player.getId(), equipmentList));
-
 	}
 
 	private int runBackupCommand(CommandContext<ServerCommandSource> context) {
@@ -284,7 +251,7 @@ public class ServerBackup implements ModInitializer {
 				.sendMessage(Text.literal("Backing up world...").setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
 
 		try {
-			backupWorld(server);
+			backupWorld(server, "manual");
 			context.getSource().sendMessage(
 					Text.literal("World backup completed successfully.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
 		} catch (IOException e) {
@@ -304,125 +271,76 @@ public class ServerBackup implements ModInitializer {
 	}
 
 	private int listBackups(CommandContext<ServerCommandSource> context) {
-		// New method for loading the backup history directly in the list function
+		File manualBackupsFolder = new File("server_backups/manual_backups");
+		File autoBackupsFolder = new File("server_backups/auto_backups");
+
 		Map<String, Path> backupHistory = new HashMap<>();
-		Gson gson = new Gson();
-		File backupHistoryFile = new File(BACKUP_HISTORY_FILE);
-		File backupFolder = new File("server_backups");
 
-		// Ensure backup history file exists or create it
-		if (!backupHistoryFile.exists()) {
-			try {
-				if (backupHistoryFile.createNewFile()) {
-					LOGGER.info("Backup history file created.");
-				} else {
-					LOGGER.error("Failed to create backup history file.");
-				}
-			} catch (IOException e) {
-				LOGGER.error("Error creating backup history file.", e);
+		// Load manual backups
+		if (manualBackupsFolder.exists() && manualBackupsFolder.isDirectory()) {
+			for (File backupDir : manualBackupsFolder.listFiles(File::isDirectory)) {
+				backupHistory.put("manual_" + backupDir.getName(), backupDir.toPath());
 			}
 		}
 
-		// Check if backup folder exists and is a valid directory
-		if (!backupFolder.exists() || !backupFolder.isDirectory()) {
-			LOGGER.error("Backup folder does not exist or is not a directory.");
-			context.getSource().sendMessage(Text.literal("Backup folder is missing or invalid.")
-					.setStyle(Style.EMPTY.withColor(Formatting.RED)));
-			return 1;
-		}
-
-		// Read the backup history file
-		try (FileReader reader = new FileReader(backupHistoryFile)) {
-			if (reader.ready()) {
-				Type type = new TypeToken<Map<String, String>>() {
-				}.getType();
-				Map<String, String> backupHistoryAsStrings = gson.fromJson(reader, type);
-				for (Map.Entry<String, String> entry : backupHistoryAsStrings.entrySet()) {
-					Path backupPath = Paths.get(entry.getValue());
-					if (Files.exists(backupPath) && Files.isDirectory(backupPath)) {
-						backupHistory.put(entry.getKey(), backupPath); // Add valid backups to the map
-					} else {
-						LOGGER.info("Backup directory no longer exists: " + backupPath);
-					}
-				}
-			} else {
-				LOGGER.info("Backup history file is empty.");
+		// Load auto backups
+		if (autoBackupsFolder.exists() && autoBackupsFolder.isDirectory()) {
+			for (File backupDir : autoBackupsFolder.listFiles(File::isDirectory)) {
+				backupHistory.put("auto_" + backupDir.getName(), backupDir.toPath());
 			}
-		} catch (JsonSyntaxException e) {
-			LOGGER.error("Invalid JSON format in backup history file. Reinitializing with an empty history.", e);
-			backupHistory.clear();
-			resetBackupHistoryFile();
-		} catch (IOException e) {
-			LOGGER.error("Error reading the backup history file.", e);
-			backupHistory.clear();
 		}
 
-		// Add any new valid directories from the backup folder to the history
-		File[] backupDirs = backupFolder.listFiles((dir, name) -> new File(dir, name).isDirectory());
-		if (backupDirs != null) {
-			for (File backupDir : backupDirs) {
-				boolean alreadyExists = backupHistory.values().stream()
-						.anyMatch(existingPath -> existingPath.getFileName().toString().equals(backupDir.getName()));
-
-				if (!alreadyExists) {
-					LOGGER.info("Adding new backup directory to history: " + backupDir.getPath());
-					String newId = UUID.randomUUID().toString();
-					backupHistory.put(newId, backupDir.toPath());
-				}
-			}
-		} else {
-			LOGGER.error("Error accessing the backup folder.");
-			context.getSource().sendMessage(Text.literal("Error accessing the backup folder.")
-					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
-		}
-
-		// Sort and display the backup list
+		// Display backups
 		if (backupHistory.isEmpty()) {
 			context.getSource().sendMessage(Text.literal("No backups found.")
 					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
 			return 1;
 		}
 
-		// Sort backups by timestamp (from the directory name)
+		// Sort backups by last modified time
 		List<Map.Entry<String, Path>> sortedBackups = new ArrayList<>(backupHistory.entrySet());
-		sortedBackups.sort((entry1, entry2) -> {
-			String timestamp1 = entry1.getValue().getFileName().toString().split("_")[0] + '_'
-					+ entry1.getValue().getFileName().toString().split("_")[1];
-			String formattedDate1 = formatTimestamp(timestamp1);
+		sortedBackups.sort(Comparator.comparing(entry -> {
+			try {
+				return Files.getLastModifiedTime(entry.getValue());
+			} catch (IOException e) {
+				LOGGER.error("Failed to get last modified time for: " + entry.getValue(), e);
+				return FileTime.fromMillis(0);
+			}
+		}));
 
-			String timestamp2 = entry2.getValue().getFileName().toString().split("_")[0] + '_'
-					+ entry2.getValue().getFileName().toString().split("_")[1];
-			String formattedDate2 = formatTimestamp(timestamp2);
+		// Add column headers
+		Text listBuilder = Text.literal("T | ID       | Date           | Time\n")
+				.setStyle(Style.EMPTY.withColor(Formatting.GOLD))
+				.append(Text.literal("-------------------------------\n")
+						.setStyle(Style.EMPTY.withColor(Formatting.GRAY)));
 
-			return formattedDate1.compareTo(formattedDate2);
-		});
-		Text listBuilder = Text.literal(""); // Start with an empty string
-		for (Map.Entry<String, Path> entry : sortedBackups) { // Iterate directly over the list of Map.Entry
-			String saveId = entry.getKey(); // Get the saveId from the entry
-			Path backupPath = entry.getValue(); // Get the backup path from the entry
+		// Build the list message
+		for (Map.Entry<String, Path> entry : sortedBackups) {
+			String backupType = entry.getKey().startsWith("manual") ? "M" : "A";
+			String backupName = entry.getKey().substring(backupType.equals("M") ? 7 : 5);
 
-			String timestamp = backupPath.getFileName().toString().split("_")[0] + '_' +
-					backupPath.getFileName().toString().split("_")[1];
-			String formattedDate = formatTimestamp(timestamp);
+			// Split the backupName by underscores
+			String[] parts = backupName.split("_");
+			if (parts.length < 3) {
+				LOGGER.warn("Invalid backup name format: " + backupName);
+				continue;
+			}
 
-			// Create the backup entry with color formatting
-			Text backupEntry = Text.literal("Backup ID: ")
-					.setStyle(Style.EMPTY.withColor(TextColor.fromRgb(0xFFFFFF)))
-					.append(Text.literal(saveId).setStyle(Style.EMPTY.withColor(TextColor.fromRgb(0x00FFFF))))
-					.append(Text.literal(" | Timestamp: ").setStyle(Style.EMPTY.withColor(TextColor.fromRgb(0xFFFFFF))))
-					.append(Text.literal(formattedDate).setStyle(Style.EMPTY.withColor(TextColor.fromRgb(0x00FF00))))
-					.append(Text.literal("\n"));
+			String backupDate = parts[0].replace("-", "/"); // Format date as 0000/00/00
+			String backupTime = parts[1].replace("-", ":"); // Format time as 00:00:00
+			String backupID = parts[2];
 
-			// Append the current backup entry to the main list builder
+			// Format the backup entry
+			Text backupEntry = Text
+					.literal(String.format("%-1s | %-6s | %-10s | %-8s\n", backupType, backupID, backupDate, backupTime))
+					.setStyle(Style.EMPTY.withColor(Formatting.WHITE));
+
 			listBuilder = listBuilder.copy().append(backupEntry);
 		}
 
-		// Send the final message to the player
 		context.getSource().sendMessage(listBuilder);
 		return 1;
-
 	}
-
 
 	// Section: Restore Management
 	private int restoreWorld(CommandContext<ServerCommandSource> context) {
@@ -564,7 +482,6 @@ public class ServerBackup implements ModInitializer {
 		server.stop(false);
 	}
 
-
 	// Section: Utility Methods
 	private void copyDirectory(Path source, Path target) throws IOException {
 		Files.walk(source)
@@ -634,6 +551,23 @@ public class ServerBackup implements ModInitializer {
 		return server.getUserCache().findByName(playerName).map(gameProfile -> gameProfile.getId()).orElse(null);
 	}
 
+	private void syncPlayerData(ServerPlayerEntity player) {
+		player.networkHandler.sendPacket(new HealthUpdateS2CPacket(
+				player.getHealth(),
+				player.getHungerManager().getFoodLevel(),
+				player.getHungerManager().getSaturationLevel()));
+
+		List<Pair<EquipmentSlot, ItemStack>> equipmentList = new ArrayList<>();
+		for (EquipmentSlot slot : EquipmentSlot.values()) {
+			ItemStack stack = player.getEquippedStack(slot);
+			if (!stack.isEmpty()) {
+				equipmentList.add(new Pair<>(slot, stack));
+			}
+		}
+		player.networkHandler.sendPacket(new EntityEquipmentUpdateS2CPacket(player.getId(), equipmentList));
+
+	}
+
 	// Section: Tick Event
 	private void registerTickEvent() {
 		ServerTickEvents.START_SERVER_TICK.register(server -> {
@@ -641,7 +575,7 @@ public class ServerBackup implements ModInitializer {
 			if (ticksSinceLastBackup >= backupDelayMinutes * TICKS_PER_MINUTE) {
 				LOGGER.info("Backup interval has passed. Starting automated world backup...");
 				try {
-					backupWorld(server);
+					backupWorld(server, "auto");
 					LOGGER.info("Automatic backup completed successfully.");
 				} catch (IOException e) {
 					LOGGER.error("Automatic backup failed", e);

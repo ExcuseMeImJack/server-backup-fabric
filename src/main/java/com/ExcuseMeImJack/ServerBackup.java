@@ -30,6 +30,8 @@ import java.nio.file.attribute.FileTime;
 import java.text.*;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class ServerBackup implements ModInitializer {
 
@@ -39,9 +41,12 @@ public class ServerBackup implements ModInitializer {
 	public static final String MOD_ID = "ServerBackup";
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 	private static final int MAX_BACKUPS = 5;
+	private static final String MANUAL_PREFIX = "manual_";
+	private static final String AUTO_PREFIX = "auto_";
 
 	// Fields
 	private int ticksSinceLastBackup = 0;
+	private long lastBackupHistoryModified = 0;
 	private int backupDelayMinutes = 10;
 	private Map<String, Path> backupHistory = new HashMap<>();
 
@@ -120,7 +125,7 @@ public class ServerBackup implements ModInitializer {
 
 		for (Map.Entry<String, Path> entry : sortedBackups) {
 			String backupName = entry.getKey();
-			if (!backupName.startsWith("manual_") && !backupName.startsWith("auto_")) {
+			if (!backupName.startsWith(MANUAL_PREFIX) && !backupName.startsWith(AUTO_PREFIX)) {
 				builder.suggest(backupName);
 			}
 		}
@@ -197,8 +202,13 @@ public class ServerBackup implements ModInitializer {
 	}
 
 	private void loadBackupHistory() {
-		Gson gson = new Gson();
 		File backupHistoryFile = new File(BACKUP_HISTORY_FILE);
+
+		if (backupHistoryFile.exists() && backupHistoryFile.lastModified() == lastBackupHistoryModified) {
+			return;
+		}
+
+		Gson gson = new Gson();
 
 		if (!backupHistoryFile.exists()) {
 			try {
@@ -238,6 +248,8 @@ public class ServerBackup implements ModInitializer {
 			LOGGER.error("Error reading the backup history file.", e);
 			backupHistory.clear();
 		}
+
+		lastBackupHistoryModified = backupHistoryFile.lastModified();
 	}
 
 	private void resetBackupHistoryFile() {
@@ -264,13 +276,17 @@ public class ServerBackup implements ModInitializer {
 				}))
 				.toList();
 
-		while (backups.size() > maxBackups) {
-			Path oldestBackup = backups.get(0);
-			deleteDirectory(oldestBackup);
-			LOGGER.info("Deleted old backup: " + oldestBackup.getFileName());
-			backups = backups.subList(1, backups.size());
+		int excessBackups = backups.size() - maxBackups;
+		if (excessBackups > 0) {
+			for (int i = 0; i < excessBackups; i++) {
+				Path oldestBackup = backups.get(i);
+				deleteDirectory(oldestBackup);
+				LOGGER.info("Deleted old backup: " + oldestBackup.getFileName());
+			}
 		}
 	}
+
+	private final ExecutorService backupExecutor = Executors.newFixedThreadPool(2);
 
 	private int runBackupCommand(CommandContext<ServerCommandSource> context) {
 		MinecraftServer server = context.getSource().getServer();
@@ -290,10 +306,9 @@ public class ServerBackup implements ModInitializer {
 			}
 		});
 
-		new Thread(() -> {
+		backupExecutor.submit(() -> {
 			try {
 				backupWorld(server, "manual");
-
 				context.getSource().sendMessage(
 						Text.literal("Manual backup completed successfully.")
 								.setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
@@ -303,7 +318,7 @@ public class ServerBackup implements ModInitializer {
 						Text.literal("Error during backup process: " + e.getMessage())
 								.setStyle(Style.EMPTY.withColor(Formatting.RED)));
 			}
-		}).start();
+		});
 
 		return 1;
 	}
@@ -324,13 +339,13 @@ public class ServerBackup implements ModInitializer {
 
 		if (manualBackupsFolder.exists() && manualBackupsFolder.isDirectory()) {
 			for (File backupDir : manualBackupsFolder.listFiles(File::isDirectory)) {
-				backupHistory.put("manual_" + backupDir.getName(), backupDir.toPath());
+				backupHistory.put(MANUAL_PREFIX + backupDir.getName(), backupDir.toPath());
 			}
 		}
 
 		if (autoBackupsFolder.exists() && autoBackupsFolder.isDirectory()) {
 			for (File backupDir : autoBackupsFolder.listFiles(File::isDirectory)) {
-				backupHistory.put("auto_" + backupDir.getName(), backupDir.toPath());
+				backupHistory.put(AUTO_PREFIX + backupDir.getName(), backupDir.toPath());
 			}
 		}
 
@@ -523,15 +538,13 @@ public class ServerBackup implements ModInitializer {
 	}
 
 	private void deleteDirectory(Path path) throws IOException {
-		Files.walk(path)
-				.sorted((a, b) -> b.compareTo(a))
-				.forEach(p -> {
-					try {
-						Files.delete(p);
-					} catch (IOException e) {
-						throw new RuntimeException("Failed to delete " + p, e);
-					}
-				});
+		List<Path> pathsToDelete = Files.walk(path)
+				.sorted(Comparator.reverseOrder())
+				.toList();
+
+		for (Path p : pathsToDelete) {
+			Files.delete(p);
+		}
 	}
 
 	private String generateRandomSaveId() {

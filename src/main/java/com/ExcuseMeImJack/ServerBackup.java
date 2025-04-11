@@ -104,16 +104,14 @@ public class ServerBackup implements ModInitializer {
 	// Section: Command Suggestions
 	private CompletableFuture<Suggestions> suggestBackupIDs(CommandContext<ServerCommandSource> context,
 			SuggestionsBuilder builder) {
+
+		loadBackupHistory();
+
 		List<Map.Entry<String, Path>> sortedBackups = new ArrayList<>(backupHistory.entrySet());
 
 		sortedBackups.sort(Comparator.comparing(entry -> {
 			try {
-				if (Files.exists(entry.getValue())) {
-					return Files.getLastModifiedTime(entry.getValue());
-				} else {
-					LOGGER.warn("Backup path does not exist: " + entry.getValue());
-					return FileTime.fromMillis(0);
-				}
+				return Files.getLastModifiedTime(entry.getValue());
 			} catch (IOException e) {
 				LOGGER.error("Failed to get last modified time for: " + entry.getValue(), e);
 				return FileTime.fromMillis(0);
@@ -199,47 +197,48 @@ public class ServerBackup implements ModInitializer {
 	}
 
 	private void loadBackupHistory() {
-    Gson gson = new Gson();
-    File backupHistoryFile = new File(BACKUP_HISTORY_FILE);
+		Gson gson = new Gson();
+		File backupHistoryFile = new File(BACKUP_HISTORY_FILE);
 
-    if (!backupHistoryFile.exists()) {
-        try {
-            if (backupHistoryFile.createNewFile()) {
-                LOGGER.info("Backup history file created.");
-            } else {
-                LOGGER.error("Failed to create backup history file.");
-            }
-        } catch (IOException e) {
-            LOGGER.error("Error creating backup history file.", e);
-        }
-    }
+		if (!backupHistoryFile.exists()) {
+			try {
+				if (backupHistoryFile.createNewFile()) {
+					LOGGER.info("Backup history file created.");
+				} else {
+					LOGGER.error("Failed to create backup history file.");
+				}
+			} catch (IOException e) {
+				LOGGER.error("Error creating backup history file.", e);
+			}
+		}
 
-    try (FileReader reader = new FileReader(backupHistoryFile)) {
-        if (reader.ready()) {
-            Type type = new TypeToken<Map<String, String>>() {}.getType();
-            Map<String, String> backupHistoryAsStrings = gson.fromJson(reader, type);
-            backupHistory.clear();
-            for (Map.Entry<String, String> entry : backupHistoryAsStrings.entrySet()) {
-                Path backupPath = Paths.get(entry.getValue());
-                if (Files.exists(backupPath) && Files.isDirectory(backupPath)) {
-                    backupHistory.put(entry.getKey(), backupPath);
-                } else {
-                    LOGGER.warn("Backup directory no longer exists: " + backupPath);
-                }
-            }
-        } else {
-            LOGGER.info("Backup history file is empty. Initializing with an empty history.");
-            backupHistory.clear();
-        }
-    } catch (JsonSyntaxException e) {
-        LOGGER.error("Invalid JSON format in backup history file. Reinitializing with an empty history.", e);
-        backupHistory.clear();
-        resetBackupHistoryFile();
-    } catch (IOException e) {
-        LOGGER.error("Error reading the backup history file.", e);
-        backupHistory.clear();
-    }
-}
+		try (FileReader reader = new FileReader(backupHistoryFile)) {
+			if (reader.ready()) {
+				Type type = new TypeToken<Map<String, String>>() {
+				}.getType();
+				Map<String, String> backupHistoryAsStrings = gson.fromJson(reader, type);
+				backupHistory.clear();
+				for (Map.Entry<String, String> entry : backupHistoryAsStrings.entrySet()) {
+					Path backupPath = Paths.get(entry.getValue());
+					if (Files.exists(backupPath) && Files.isDirectory(backupPath)) {
+						backupHistory.put(entry.getKey(), backupPath);
+					} else {
+						LOGGER.warn("Backup directory no longer exists: " + backupPath);
+					}
+				}
+			} else {
+				LOGGER.info("Backup history file is empty. Initializing with an empty history.");
+				backupHistory.clear();
+			}
+		} catch (JsonSyntaxException e) {
+			LOGGER.error("Invalid JSON format in backup history file. Reinitializing with an empty history.", e);
+			backupHistory.clear();
+			resetBackupHistoryFile();
+		} catch (IOException e) {
+			LOGGER.error("Error reading the backup history file.", e);
+			backupHistory.clear();
+		}
+	}
 
 	private void resetBackupHistoryFile() {
 		Gson gson = new Gson();
@@ -365,21 +364,21 @@ public class ServerBackup implements ModInitializer {
 				continue;
 			}
 
-				String backupDate = parts[0].replace("-", "/");
-				String backupTime = parts[1].replace("-", ":");
-				String backupID = parts[2];
+			String backupDate = parts[0].replace("-", "/");
+			String backupTime = parts[1].replace("-", ":");
+			String backupID = parts[2];
 
-				Text backupEntry = Text.literal("")
-						.append(Text.literal(backupType)
-								.setStyle(Style.EMPTY.withColor(backupType.equals("M") ? Formatting.RED : Formatting.GREEN)))
-						.append(Text.literal(" | ").setStyle(Style.EMPTY.withColor(Formatting.WHITE)))
-						.append(Text.literal(backupID)
-								.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)))
-						.append(Text.literal(" | " + backupDate + " | " + backupTime + "\n")
-								.setStyle(Style.EMPTY.withColor(Formatting.WHITE)));
+			Text backupEntry = Text.literal("")
+					.append(Text.literal(backupType)
+							.setStyle(Style.EMPTY.withColor(backupType.equals("M") ? Formatting.RED : Formatting.GREEN)))
+					.append(Text.literal(" | ").setStyle(Style.EMPTY.withColor(Formatting.WHITE)))
+					.append(Text.literal(backupID)
+							.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)))
+					.append(Text.literal(" | " + backupDate + " | " + backupTime + "\n")
+							.setStyle(Style.EMPTY.withColor(Formatting.WHITE)));
 
-				listBuilder = listBuilder.copy().append(backupEntry);
-			}
+			listBuilder = listBuilder.copy().append(backupEntry);
+		}
 
 		context.getSource().sendMessage(listBuilder);
 		return 1;

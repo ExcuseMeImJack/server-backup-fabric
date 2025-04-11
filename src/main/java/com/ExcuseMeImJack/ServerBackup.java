@@ -19,6 +19,8 @@ import com.google.gson.*;
 import com.mojang.brigadier.*;
 import com.mojang.brigadier.arguments.*;
 import com.mojang.brigadier.context.*;
+import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import com.mojang.datafixers.util.Pair;
 
 import java.io.*;
@@ -27,6 +29,7 @@ import java.nio.file.*;
 import java.nio.file.attribute.FileTime;
 import java.text.*;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 public class ServerBackup implements ModInitializer {
 
@@ -35,6 +38,7 @@ public class ServerBackup implements ModInitializer {
 	private static final String BACKUP_HISTORY_FILE = "backup_history.json";
 	public static final String MOD_ID = "ServerBackup";
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+	private static final int MAX_BACKUPS = 5;
 
 	// Fields
 	private int ticksSinceLastBackup = 0;
@@ -76,15 +80,18 @@ public class ServerBackup implements ModInitializer {
 	private void registerRestoreCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
 		dispatcher.register(CommandManager.literal("serverbackup")
 				.then(CommandManager.literal("restoreworld")
-						.then(CommandManager.argument("saveid", StringArgumentType.string())
+						.then(CommandManager.argument("backupID", StringArgumentType.string())
+								.suggests(this::suggestBackupIDs)
 								.executes(this::restoreWorld))));
 	}
 
 	private void registerRestorePlayerCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
 		dispatcher.register(CommandManager.literal("serverbackup")
 				.then(CommandManager.literal("restoreplayer")
-						.then(CommandManager.argument("saveid", StringArgumentType.string())
+						.then(CommandManager.argument("backupID", StringArgumentType.string())
+								.suggests(this::suggestBackupIDs)
 								.then(CommandManager.argument("player", StringArgumentType.string())
+										.suggests(this::suggestOnlinePlayers)
 										.executes(this::restorePlayerInventory)))));
 	}
 
@@ -92,6 +99,46 @@ public class ServerBackup implements ModInitializer {
 		dispatcher.register(CommandManager.literal("serverbackup")
 				.then(CommandManager.literal("list")
 						.executes(this::listBackups)));
+	}
+
+	// Section: Command Suggestions
+	private CompletableFuture<Suggestions> suggestBackupIDs(CommandContext<ServerCommandSource> context,
+			SuggestionsBuilder builder) {
+		List<Map.Entry<String, Path>> sortedBackups = new ArrayList<>(backupHistory.entrySet());
+
+		// Sort backups by last modified time
+		sortedBackups.sort(Comparator.comparing(entry -> {
+			try {
+				if (Files.exists(entry.getValue())) { // Check if the path exists
+					return Files.getLastModifiedTime(entry.getValue());
+				} else {
+					LOGGER.warn("Backup path does not exist: " + entry.getValue());
+					return FileTime.fromMillis(0); // Default to epoch time if the path doesn't exist
+				}
+			} catch (IOException e) {
+				LOGGER.error("Failed to get last modified time for: " + entry.getValue(), e);
+				return FileTime.fromMillis(0);
+			}
+		}));
+
+		// Suggest only the folder names that do not start with "manual_" or "auto_"
+		for (Map.Entry<String, Path> entry : sortedBackups) {
+			String backupName = entry.getKey();
+			if (!backupName.startsWith("manual_") && !backupName.startsWith("auto_")) {
+				builder.suggest(backupName);
+			}
+		}
+
+		return builder.buildFuture();
+	}
+
+	private CompletableFuture<Suggestions> suggestOnlinePlayers(CommandContext<ServerCommandSource> context,
+			SuggestionsBuilder builder) {
+		MinecraftServer server = context.getSource().getServer();
+		for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
+			builder.suggest(player.getName().getString());
+		}
+		return builder.buildFuture();
 	}
 
 	// Section: Backup Management
@@ -104,9 +151,9 @@ public class ServerBackup implements ModInitializer {
 		Files.createDirectories(backupsDir);
 
 		String timestamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
-		String saveId = generateRandomSaveId();
+		String backupID = generateRandomSaveId();
 
-		Path backupDest = backupsDir.resolve(timestamp + "_" + saveId);
+		Path backupDest = backupsDir.resolve(timestamp + "_" + backupID);
 		Path worldDir = server.getSavePath(WorldSavePath.ROOT);
 		Path tempBackupDir = Files.createTempDirectory("world_backup_");
 
@@ -120,7 +167,12 @@ public class ServerBackup implements ModInitializer {
 			Files.move(tempBackupDir, backupDest, StandardCopyOption.REPLACE_EXISTING);
 			LOGGER.info("Backup successfully moved to: " + backupDest);
 
-			backupHistory.put(saveId, backupDest);
+			backupHistory.put(backupID, backupDest);
+
+			// Limit manual backups to 5
+			if (backupType.equals("manual")) {
+				limitBackups(backupsDir, 5);
+			}
 		} catch (IOException e) {
 			LOGGER.error("Backup failed", e);
 			throw e;
@@ -134,7 +186,7 @@ public class ServerBackup implements ModInitializer {
 		saveBackupHistory();
 
 		if (backupType.equals("auto")) {
-			limitBackups(backupsDir, 10);
+			limitBackups(backupsDir, MAX_BACKUPS);
 		}
 	}
 
@@ -154,68 +206,47 @@ public class ServerBackup implements ModInitializer {
 	}
 
 	private void loadBackupHistory() {
-		Gson gson = new Gson();
-		File backupHistoryFile = new File(BACKUP_HISTORY_FILE);
-		File backupFolder = new File("server_backups");
+    Gson gson = new Gson();
+    File backupHistoryFile = new File(BACKUP_HISTORY_FILE);
 
-		if (!backupHistoryFile.exists()) {
-			try {
-				if (backupHistoryFile.createNewFile()) {
-					LOGGER.info("Backup history file created.");
-				} else {
-					LOGGER.error("Failed to create backup history file.");
-				}
-			} catch (IOException e) {
-				LOGGER.error("Error creating backup history file.", e);
-			}
-		}
+    if (!backupHistoryFile.exists()) {
+        try {
+            if (backupHistoryFile.createNewFile()) {
+                LOGGER.info("Backup history file created.");
+            } else {
+                LOGGER.error("Failed to create backup history file.");
+            }
+        } catch (IOException e) {
+            LOGGER.error("Error creating backup history file.", e);
+        }
+    }
 
-		if (!backupFolder.exists() || !backupFolder.isDirectory()) {
-			LOGGER.error("Backup folder does not exist or is not a directory.");
-			return;
-		}
-
-		try (FileReader reader = new FileReader(backupHistoryFile)) {
-			if (reader.ready()) {
-				Type type = new TypeToken<Map<String, String>>() {
-				}.getType();
-				Map<String, String> backupHistoryAsStrings = gson.fromJson(reader, type);
-				backupHistory.clear();
-				for (Map.Entry<String, String> entry : backupHistoryAsStrings.entrySet()) {
-					Path backupPath = Paths.get(entry.getValue());
-					if (Files.exists(backupPath) && Files.isDirectory(backupPath)) {
-						backupHistory.put(entry.getKey(), backupPath); // Keep valid backups
-					} else {
-						LOGGER.info("Backup directory no longer exists: " + backupPath);
-					}
-				}
-			} else {
-				LOGGER.info("Backup history file is empty. Initializing with an empty history.");
-				backupHistory.clear();
-			}
-		} catch (JsonSyntaxException e) {
-			LOGGER.error("Invalid JSON format in backup history file. Reinitializing with an empty history.", e);
-			backupHistory.clear();
-			resetBackupHistoryFile();
-		} catch (IOException e) {
-			LOGGER.error("Error reading the backup history file.", e);
-			backupHistory.clear();
-		}
-
-		File[] backupDirs = backupFolder.listFiles((dir, name) -> new File(dir, name).isDirectory());
-		if (backupDirs != null) {
-			for (File backupDir : backupDirs) {
-				String dirName = backupDir.getName();
-				Path backupPath = backupDir.toPath();
-				if (!backupHistory.containsKey(dirName)) {
-					LOGGER.info("Adding new backup directory to history: " + backupPath);
-					backupHistory.put(dirName, backupPath);
-				}
-			}
-		} else {
-			LOGGER.error("Error accessing the backup folder.");
-		}
-	}
+    try (FileReader reader = new FileReader(backupHistoryFile)) {
+        if (reader.ready()) {
+            Type type = new TypeToken<Map<String, String>>() {}.getType();
+            Map<String, String> backupHistoryAsStrings = gson.fromJson(reader, type);
+            backupHistory.clear();
+            for (Map.Entry<String, String> entry : backupHistoryAsStrings.entrySet()) {
+                Path backupPath = Paths.get(entry.getValue());
+                if (Files.exists(backupPath) && Files.isDirectory(backupPath)) {
+                    backupHistory.put(entry.getKey(), backupPath); // Keep valid backups
+                } else {
+                    LOGGER.warn("Backup directory no longer exists: " + backupPath);
+                }
+            }
+        } else {
+            LOGGER.info("Backup history file is empty. Initializing with an empty history.");
+            backupHistory.clear();
+        }
+    } catch (JsonSyntaxException e) {
+        LOGGER.error("Invalid JSON format in backup history file. Reinitializing with an empty history.", e);
+        backupHistory.clear();
+        resetBackupHistoryFile();
+    } catch (IOException e) {
+        LOGGER.error("Error reading the backup history file.", e);
+        backupHistory.clear();
+    }
+}
 
 	private void resetBackupHistoryFile() {
 		Gson gson = new Gson();
@@ -248,17 +279,40 @@ public class ServerBackup implements ModInitializer {
 	private int runBackupCommand(CommandContext<ServerCommandSource> context) {
 		MinecraftServer server = context.getSource().getServer();
 		context.getSource()
-				.sendMessage(Text.literal("Backing up world...").setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
+				.sendMessage(Text.literal("Starting manual backup...").setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
 
-		try {
-			backupWorld(server, "manual");
-			context.getSource().sendMessage(
-					Text.literal("World backup completed successfully.").setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
-		} catch (IOException e) {
-			LOGGER.error("Backup failed", e);
-			context.getSource()
-					.sendError(Text.literal("Backup failed: " + e.getMessage()).setStyle(Style.EMPTY.withColor(Formatting.RED)));
-		}
+		// Trigger the save-all command on the main thread
+		server.execute(() -> {
+			try {
+				LOGGER.info("Executing save-all command...");
+				String command = "save-all";
+				ParseResults<ServerCommandSource> parseResults = server.getCommandManager().getDispatcher().parse(command,
+						server.getCommandSource());
+				server.getCommandManager().getDispatcher().execute(parseResults);
+				LOGGER.info("World and player data saved successfully.");
+			} catch (Exception e) {
+				LOGGER.error("Failed to execute save-all command", e);
+			}
+		});
+
+		// Offload the backup process to a separate thread
+		new Thread(() -> {
+			try {
+				// Perform the backup
+				backupWorld(server, "manual");
+
+				// Notify the user that the backup is complete
+				context.getSource().sendMessage(
+						Text.literal("Manual backup completed successfully.")
+								.setStyle(Style.EMPTY.withColor(Formatting.GREEN)));
+			} catch (Exception e) {
+				LOGGER.error("Error during backup process", e);
+				context.getSource().sendError(
+						Text.literal("Error during backup process: " + e.getMessage())
+								.setStyle(Style.EMPTY.withColor(Formatting.RED)));
+			}
+		}).start();
+
 		return 1;
 	}
 
@@ -330,10 +384,15 @@ public class ServerBackup implements ModInitializer {
 			String backupTime = parts[1].replace("-", ":"); // Format time as 00:00:00
 			String backupID = parts[2];
 
-			// Format the backup entry
-			Text backupEntry = Text
-					.literal(String.format("%-1s | %-6s | %-10s | %-8s\n", backupType, backupID, backupDate, backupTime))
-					.setStyle(Style.EMPTY.withColor(Formatting.WHITE));
+			// Format the backup entry with color coding
+			Text backupEntry = Text.literal("")
+					.append(Text.literal(backupType)
+							.setStyle(Style.EMPTY.withColor(backupType.equals("M") ? Formatting.RED : Formatting.GREEN)))
+					.append(Text.literal(" | ").setStyle(Style.EMPTY.withColor(Formatting.WHITE)))
+					.append(Text.literal(backupID)
+							.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)))
+					.append(Text.literal(" | " + backupDate + " | " + backupTime + "\n")
+							.setStyle(Style.EMPTY.withColor(Formatting.WHITE)));
 
 			listBuilder = listBuilder.copy().append(backupEntry);
 		}
@@ -344,14 +403,14 @@ public class ServerBackup implements ModInitializer {
 
 	// Section: Restore Management
 	private int restoreWorld(CommandContext<ServerCommandSource> context) {
-		String saveId = StringArgumentType.getString(context, "saveid");
+		String backupID = StringArgumentType.getString(context, "backupID");
 		MinecraftServer server = context.getSource().getServer();
 
 		// Check if the backup exists
-		Path backupPath = backupHistory.get(saveId);
+		Path backupPath = backupHistory.get(backupID);
 		if (backupPath == null) {
 			context.getSource().sendError(
-					Text.literal("No backup found with ID " + saveId).setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
+					Text.literal("No backup found with ID " + backupID).setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
 			return 0;
 		}
 
@@ -359,7 +418,7 @@ public class ServerBackup implements ModInitializer {
 		String timestamp = backupPath.getFileName().toString().split("_")[0];
 		String formattedDate = formatTimestamp(timestamp);
 		context.getSource()
-				.sendMessage(Text.literal("Restoring world from backup " + saveId + " (Timestamp: " + formattedDate + ")")
+				.sendMessage(Text.literal("Restoring world from backup " + backupID + " (Timestamp: " + formattedDate + ")")
 						.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
 
 		// Step 1: Kick all players
@@ -371,14 +430,6 @@ public class ServerBackup implements ModInitializer {
 					false);
 			player.networkHandler.disconnect(Text.literal("The world is being restored. Please reconnect shortly.")
 					.setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
-		}
-
-		// Optional: Wait for players to disconnect (not the best solution but works for
-		// now)
-		try {
-			Thread.sleep(5000); // Wait for a few seconds to ensure players disconnect
-		} catch (InterruptedException e) {
-			LOGGER.error("Error waiting for players to disconnect", e);
 		}
 
 		// Step 2: Restore the world from the backup
@@ -393,8 +444,12 @@ public class ServerBackup implements ModInitializer {
 			return 0;
 		}
 
-		// Step 3: Restart the server to load the restored world
-		restartServer(server);
+		// Step 3: Schedule server shutdown to load the restored world
+		server.execute(() -> {
+			LOGGER.info("Restarting the server to load the restored world...");
+			server.getPlayerManager().broadcast(Text.literal("Server is restarting to load the restored world..."), false);
+			server.stop(false); // Stop the server, which will trigger a restart in most environments
+		});
 
 		return 1;
 	}
@@ -406,18 +461,18 @@ public class ServerBackup implements ModInitializer {
 	}
 
 	private int restorePlayerInventory(CommandContext<ServerCommandSource> context) {
-		String saveId = StringArgumentType.getString(context, "saveid");
+		String backupID = StringArgumentType.getString(context, "backupID");
 		String playerName = StringArgumentType.getString(context, "player");
 
-		Path backupPath = backupHistory.get(saveId);
+		Path backupPath = backupHistory.get(backupID);
 		if (backupPath == null) {
 			context.getSource().sendError(
-					Text.literal("No backup found with ID " + saveId).setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
+					Text.literal("No backup found with ID " + backupID).setStyle(Style.EMPTY.withColor(Formatting.YELLOW)));
 			return 0;
 		}
 
 		context.getSource()
-				.sendMessage(Text.literal("Restoring inventory for player " + playerName + " from backup " + saveId)
+				.sendMessage(Text.literal("Restoring inventory for player " + playerName + " from backup " + backupID)
 						.setStyle(Style.EMPTY.withColor(Formatting.AQUA)));
 
 		UUID playerUUID = getPlayerUUID(playerName, context.getSource());
@@ -469,17 +524,6 @@ public class ServerBackup implements ModInitializer {
 					.setStyle(Style.EMPTY.withColor(Formatting.RED)));
 			return 0;
 		}
-	}
-
-	private void restartServer(MinecraftServer server) {
-		// This method will trigger the server to restart after the world is restored
-		LOGGER.info("Restarting the server...");
-
-		// Send a restart message to all players
-		server.getPlayerManager().broadcast(Text.literal("Server is restarting..."), false);
-
-		// Stop the server, which will trigger a restart on most environments
-		server.stop(false);
 	}
 
 	// Section: Utility Methods

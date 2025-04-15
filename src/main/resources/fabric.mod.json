@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "id": "serverbackup",
+  "id": "serverbackupfabric",
   "version": "1.3.0",
-  "name": "ServerBackup",
-  "description": "Backups up your server with a single command! It's also very easy to restore player and world data!",
+  "name": "ServerBackupFabric",
+  "description": "Automate and simplify the process of creating and managing backups for your Minecraft server",
   "authors": ["ExcuseMeImJack"],
   "contact": {},
-  "license": "MIT",
+  "license": "CC01.0",
   "environment": "*",
   "entrypoints": {
     "main": [

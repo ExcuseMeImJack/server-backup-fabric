@@ -25,7 +25,7 @@
 3. **Install Fabric API:**
    - Download the Fabric API (version `0.119.5+1.21.5`) from CurseForge and place it in your server's `mods` folder.
 4. **Add the Mod:**
-   - Place the `downloaded server-backup-fabric.jar `file into your server's `mods` folder.
+   - Place the `server-backup-fabric.jar `file into your server's `mods` folder.
 5. **Start the Server:**
    - Start your Minecraft server. The mod will automatically initialize and create necessary files.
 

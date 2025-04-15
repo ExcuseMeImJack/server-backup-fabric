@@ -19,11 +19,11 @@
 - **Fabric API Version**: 0.119.5+1.21.5
 ##### Steps
 1. **Download the Mod:**
-   - Download the latest release of the mod from the Releases section of this repository.
+   - Download the latest release of the mod from the [Releases](https://github.com/ExcuseMeImJack/server-backup-fabric/releases) section of this repository.
 2. **Install Fabric Loader:**
-   - Download and install the Fabric Loader from fabricmc.net.
+   - Download and install the Fabric Loader from [fabricmc.net](https://fabricmc.net/use/installer/).
 3. **Install Fabric API:**
-   - Download the Fabric API (version `0.119.5+1.21.5`) from CurseForge and place it in your server's `mods` folder.
+   - Download the Fabric API (version `0.119.5+1.21.5`) from [CurseForge](https://www.curseforge.com/minecraft/mc-mods/fabric-api) and place it in your server's `mods` folder.
 4. **Add the Mod:**
    - Place the `server-backup-fabric.jar `file into your server's `mods` folder.
 5. **Start the Server:**
@@ -94,6 +94,10 @@ Contributions are welcome! If you encounter any issues or have feature requests,
 ---
 ### License
 This project is licensed under the CC0 1.0 License.
+
+---
+### Support
+If you have any questions or need help, feel free to open an issue on the [GitHub repository](https://github.com/ExcuseMeImJack/server-backup-fabric/issues).
 
 ---
 ### Support

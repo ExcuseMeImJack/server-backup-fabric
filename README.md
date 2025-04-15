@@ -99,6 +99,3 @@ This project is licensed under the CC0 1.0 License.
 ### Support
 If you have any questions or need help, feel free to open an issue on the [GitHub repository](https://github.com/ExcuseMeImJack/server-backup-fabric/issues).
 
----
-### Support
-If you have any questions or need help, feel free to open an issue on the GitHub repository.

@@ -93,7 +93,7 @@ Contributions are welcome! If you encounter any issues or have feature requests,
 
 ---
 ### License
-This project is licensed under the MIT License.
+This project is licensed under the CC0 1.0 License.
 
 ---
 ### Support
